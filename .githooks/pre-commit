@@ -1,0 +1,8 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+while IFS= read -r notebook; do
+    stripped=$(git show ":$notebook" | uv run --group dev nbstripout)
+    hash=$(printf '%s' "$stripped" | git hash-object -w --stdin)
+    git update-index --cacheinfo "100644,$hash,$notebook"
+done < <(git diff --cached --name-only --diff-filter=ACM | grep '\.ipynb$' || true)

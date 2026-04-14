@@ -19,7 +19,7 @@ torch = { index = "pytorch-cuda" }
 
 [dependency-groups]
 dev = [
-    "pre-commit",
+    "nbstripout",
 ]
 
 [tool.ruff]
