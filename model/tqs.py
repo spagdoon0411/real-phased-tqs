@@ -55,6 +55,9 @@ class TransformerQuantumState(nn.Module):
         batch_size: int,
         hamiltonian: Hamiltonian,
         device: torch.device,
+        n_heads: int = 4,
+        n_layers: int = 2,
+        dropout: float = 0.0,
     ):
         super().__init__()
         self.hamiltonian = hamiltonian
@@ -64,6 +67,7 @@ class TransformerQuantumState(nn.Module):
         self.set_prefix(hamiltonian.phys_params, hamiltonian.system_dim)
         self.spin_dim = 2  # Spin 1/2 fermions
         self.prefix_dim = hamiltonian.phys_params.shape[0] + hamiltonian.system_dim.shape[0]
+        self.max_seq_len = max_len + self.prefix_dim
 
         # Layers
         self.embedding = Embedding(
@@ -72,9 +76,23 @@ class TransformerQuantumState(nn.Module):
             n_params=hamiltonian.phys_params.shape[0],
             device=device,
         )
-        self.pos_encoding = SinusoidalPositionalEncoding(d_model, max_len + self.prefix_dim, device)
+        self.pos_encoding = SinusoidalPositionalEncoding(d_model, self.max_seq_len, device)
+        self.transformer = nn.TransformerEncoder(
+            encoder_layer=nn.TransformerEncoderLayer(
+                d_model=d_model,
+                nhead=n_heads,
+                dim_feedforward=4 * d_model,
+                dropout=dropout,
+                batch_first=False,
+                device=device,
+            ),
+            num_layers=n_layers,
+        )
 
-        # TODO: init max transformer mask on device here
+        self.register_buffer(
+            "mask",
+            torch.nn.Transformer.generate_square_subsequent_mask(self.max_seq_len, device=device),
+        )
 
     def set_prefix(
         self,
@@ -120,7 +138,8 @@ class TransformerQuantumState(nn.Module):
         Maps a buffer of parameter and spin tokens to next-token log-probabilities. If `compute_phases` is True,
         also computes phase contributions to the probability amplitude of the final basis state.
         """
-        buffer = buffer.to(self.device)  # (prefix + max_expected_length, batch_size, prefix_dim + spin_dim)
-        buffer = self.embedding(buffer)  # (prefix + max_expected_length, batch_size, d_model)
+        buffer = buffer.to(self.device)  # (seq_len, batch_size, prefix_dim + spin_dim)
+        buffer = self.embedding(buffer)  # (seq_len, batch_size, d_model)
         buffer = self.pos_encoding(buffer)
+        buffer = self.transformer(buffer, mask=self.mask, is_causal=True)
         return buffer
