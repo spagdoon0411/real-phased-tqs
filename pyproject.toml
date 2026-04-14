@@ -17,6 +17,11 @@ explicit = true
 torch = { index = "pytorch-cuda" }
 
 
+[dependency-groups]
+dev = [
+    "pre-commit",
+]
+
 [tool.ruff]
 line-length = 120
 
