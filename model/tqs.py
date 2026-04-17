@@ -178,31 +178,55 @@ class TransformerQuantumState(nn.Module):
         res = self.deembedding(buffer, compute_phases=compute_phases)
         return res  # Either log_probs or (log_probs, phases)
 
-    def sample_states(self, buffer: torch.Tensor, start_at: int = 0) -> torch.Tensor:
+    def sample_states(self, buffer: torch.Tensor, num_samples_each_step: int) -> tuple[torch.Tensor, torch.Tensor]:
         """
-        Constructs states autoregressively, filling in the buffer provided.
-
-        NOTE: assumes the spins present in the buffer are unique---otherwise, sampling
-        and downstream computations are outright incorrect.
+        Expands unique states as a binary tree into `buffer`, doubling the number of populated batch
+        entries at each step. Each step draws `num_samples_each_step` multinomial samples from the
+        next-token distribution of every active entry; the resulting [zeros, ones] counts are recorded
+        in `freq`, aligned along the batch dimension.
         """
 
         target_len = buffer.shape[0] - self.prefix_dim
+        batch_size = buffer.shape[1]
+        freq = torch.zeros(batch_size, device=self.device, dtype=torch.long)
+        freq[0] = num_samples_each_step
+        active_n = 1
 
-        for i in range(start_at, target_len):
+        for i in range(target_len):
             # NOTE: values downstream of log_probs but upstream of random sampling are not relevant to the energy loss.
             # See (Gradient Estimation Using Stochastic Computation Graphs, Schulman et al. 2016). Detaching frees
             # memory that would have been used for adjoints.
 
+            # TODO: how do we know that allocator churn is not terrible when the forward pass is called repeatedly?
+            # The active view into the buffer grows along both the sequence and batch dimensions across iterations.
+            #
+            # At the very least, force allocation of enough memory the first time around by passing the entire tensor
+            # through the forward pass and ignoring sequence positions that have not been reached yet.
+
             target_idx = i + self.prefix_dim  # Index of next token to be sampled
-            log_probs = self.forward(buffer[:target_idx], compute_phases=False)
-            probs = log_probs.detach()[-1, :, :].exp()  # log_softmax handles normalization
-            sampled_idx = torch.multinomial(probs, num_samples=1).squeeze(-1)
-            buffer[target_idx, torch.arange(self.batch_size), self.prefix_dim + sampled_idx] = 1
+            log_probs = self.forward(buffer, compute_phases=False)
+            probs = log_probs.detach()[target_idx - 1, :active_n, :].exp()  # log_softmax handles normalization
+            samples = torch.multinomial(probs, num_samples=num_samples_each_step, replacement=True)
+            count_ones = samples.sum(dim=-1)
+            count_zeros = num_samples_each_step - count_ones
+
+            if 2 * active_n <= batch_size:
+                # Place the 1-branch continuations in fresh slots at the bottom so existing entries don't churn.
+                buffer[:target_idx, active_n : 2 * active_n, :] = buffer[:target_idx, :active_n, :]
+                buffer[target_idx, :active_n, self.prefix_dim] = 1
+                buffer[target_idx, active_n : 2 * active_n, self.prefix_dim + 1] = 1
+                freq[:active_n] = count_zeros
+                freq[active_n : 2 * active_n] = count_ones
+                active_n *= 2
+            else:
+                # Buffer is full; stop branching and sample a single token per active entry.
+                picks = torch.multinomial(probs, num_samples=1).squeeze(-1)
+                buffer[target_idx, torch.arange(active_n), self.prefix_dim + picks] = 1
 
             # TODO: fit more chains and reduce redundant computations by forcing params and system dimensions
             # to be constant across the batch dimension. Add a mode to do this.
 
-        return buffer
+        return buffer, freq
 
     def construct_wavefunction(self, log_probs: torch.Tensor, phases: torch.Tensor) -> torch.Tensor:
         """
