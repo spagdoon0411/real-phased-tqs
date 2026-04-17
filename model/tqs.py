@@ -120,6 +120,32 @@ class TransformerQuantumState(nn.Module):
             torch.nn.Transformer.generate_square_subsequent_mask(self.max_seq_len, device=device),
         )
 
+        self.initialize_weights()
+
+    def initialize_weights(self) -> None:
+        """
+        Applies Xavier-uniform initialization to every `nn.Linear` weight (including the
+        attention output projections), Xavier-uniform to the fused `in_proj_weight` of each
+        `nn.MultiheadAttention`, zero for all biases, and the identity `(weight=1, bias=0)`
+        for `nn.LayerNorm`.
+        """
+
+        def _init(module: nn.Module) -> None:
+            if isinstance(module, nn.Linear):
+                nn.init.xavier_uniform_(module.weight)
+                if module.bias is not None:
+                    nn.init.zeros_(module.bias)
+            elif isinstance(module, nn.LayerNorm):
+                nn.init.ones_(module.weight)
+                nn.init.zeros_(module.bias)
+            elif isinstance(module, nn.MultiheadAttention):
+                if module.in_proj_weight is not None:
+                    nn.init.xavier_uniform_(module.in_proj_weight)
+                if module.in_proj_bias is not None:
+                    nn.init.zeros_(module.in_proj_bias)
+
+        self.apply(_init)
+
     def set_prefix(
         self,
         phys_params: torch.Tensor,
