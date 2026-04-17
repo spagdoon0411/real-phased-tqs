@@ -60,6 +60,13 @@ class Deembedding(nn.Module):
         self.linear = nn.Linear(d_model, possible_values, device=device)
         self.possible_values = possible_values
 
+    @staticmethod
+    def _softsign(x: torch.Tensor) -> torch.Tensor:
+        """
+        Definition borrowed from Zhang and Ventra (see yuanhangzhang98/transformer_quantum_state).
+        """
+        return 2 * torch.pi * (1 + x / (1 + x.abs()))
+
     def forward(self, x: torch.Tensor, compute_phases: bool = False) -> torch.Tensor:
         logits = self.linear(x)  # (seq_len, batch_size, possible_values)
 
@@ -180,13 +187,6 @@ class TransformerQuantumState(nn.Module):
             # Populate any initial spin data
             spin_buffer[:, :, self.prefix_dim : self.prefix_dim + self.spin_dim] = spin_tokens
         return spin_buffer
-
-    @staticmethod
-    def _softsign(x: torch.Tensor) -> torch.Tensor:
-        """
-        Definition borrowed from Zhang and Ventra (see yuanhangzhang98/transformer_quantum_state).
-        """
-        return 2 * torch.pi * (1 + x / (1 + x.abs()))
 
     def forward(
         self,
