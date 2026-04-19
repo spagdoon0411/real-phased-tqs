@@ -165,6 +165,9 @@ def compute_observable(model, samples, sample_weight, observable, batch_mean=Tru
     return results
 
 
+PSI_RATIO_CLAMP = 10.0
+
+
 def compute_flip(model, samples, flip_idx, psi):
     """
     Parameters
@@ -183,6 +186,9 @@ def compute_flip(model, samples, flip_idx, psi):
 
         O_loc(x) = O_{x, x'} psi(x') / psi(x)
         This function computes psi(x') / psi(x) when x'!=x
+
+    The ratio is clamped to magnitude `PSI_RATIO_CLAMP` to suppress outliers from
+    rarely-sampled x where |psi(x)| -> 0.
     """
 
     n, batch = samples.shape
@@ -197,7 +203,9 @@ def compute_flip(model, samples, flip_idx, psi):
     _, _, psi_flipped = _psi_along_samples(model, samples_flipped.reshape(n, n_op * batch))
     psi_flipped = psi_flipped.reshape(n_op, batch)
 
-    return psi_flipped / psi
+    ratio = psi_flipped / psi
+    mag = ratio.abs()
+    return torch.where(mag < PSI_RATIO_CLAMP, ratio, ratio / mag.clamp(min=1e-12) * PSI_RATIO_CLAMP)
 
 
 def compute_phase(spin_pm, phase_idx):
