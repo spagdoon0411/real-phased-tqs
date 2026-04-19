@@ -1,11 +1,13 @@
+import numpy as np
+import scipy.sparse as sp
 import torch
 
 
 _PAULI = {
-    "I": torch.tensor([[1, 0], [0, 1]], dtype=torch.complex64),
-    "X": torch.tensor([[0, 1], [1, 0]], dtype=torch.complex64),
-    "Y": torch.tensor([[0, -1j], [1j, 0]], dtype=torch.complex64),
-    "Z": torch.tensor([[1, 0], [0, -1]], dtype=torch.complex64),
+    "I": sp.csr_array(np.array([[1, 0], [0, 1]], dtype=np.complex64)),
+    "X": sp.csr_array(np.array([[0, 1], [1, 0]], dtype=np.complex64)),
+    "Y": sp.csr_array(np.array([[0, -1j], [1j, 0]], dtype=np.complex64)),
+    "Z": sp.csr_array(np.array([[1, 0], [0, -1]], dtype=np.complex64)),
 }
 
 
@@ -41,29 +43,28 @@ class Hamiltonian:
         """
         raise NotImplementedError
 
-    def sparse_matrix(self) -> torch.Tensor:
+    def sparse_matrix(self) -> sp.csr_array:
         """
         Materializes H on the full 2^L-dimensional computational basis by summing Kronecker
         products of Pauli matrices against the observable tuples returned by `observables()`.
-        Returns a coalesced sparse COO tensor of shape (2^L, 2^L).
+        Returns a scipy CSR array of shape (2^L, 2^L).
         """
         L = int(self.system_dim[0].item())
         N = 1 << L
 
-        H = torch.zeros((N, N), dtype=torch.complex64)
+        H = sp.csr_array((N, N), dtype=np.complex64)
 
         for pauli_strs, coefs, spin_idx in self.observables():
             n_op = spin_idx.shape[0]
             for pauli_str, coef in zip(pauli_strs, coefs):
                 if not isinstance(coef, torch.Tensor):
                     coef = torch.tensor(coef)
-                coef = coef.reshape(-1).to(torch.complex64)
+                coef = coef.reshape(-1).to(torch.complex64).numpy()
                 for op_idx in range(n_op):
                     acting = dict(zip(spin_idx[op_idx].tolist(), pauli_str))
-                    mats = [_PAULI[acting.get(site, "I")] for site in range(L)]
-                    term = mats[0]
-                    for m in mats[1:]:
-                        term = torch.kron(term, m)
+                    term = _PAULI[acting.get(0, "I")]
+                    for site in range(1, L):
+                        term = sp.kron(term, _PAULI[acting.get(site, "I")], format="csr")
                     H = H + coef[op_idx] * term
 
-        return H.to_sparse().coalesce()
+        return H
