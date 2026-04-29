@@ -3,6 +3,7 @@ import math
 from hamiltonian.hamiltonian import Hamiltonian
 import torch
 from torch import nn
+from torch.distributions import Binomial
 
 from torch.nn.functional import log_softmax
 
@@ -150,6 +151,8 @@ class TransformerQuantumState(nn.Module):
                     nn.init.xavier_uniform_(module.in_proj_weight)
                 if module.in_proj_bias is not None:
                     nn.init.zeros_(module.in_proj_bias)
+            elif isinstance(module, nn.Embedding):
+                nn.init.normal_(module.weight, mean=0.0, std=0.02)
 
         self.apply(_init)
 
@@ -164,7 +167,7 @@ class TransformerQuantumState(nn.Module):
         self.hamiltonian.set_phys_params(phys_params)
         self.hamiltonian.set_system_dim(system_dim)
         diagonal = torch.cat([system_dim.exp(), phys_params], dim=0)
-        self.prefix = torch.diag(diagonal)  # (prefix_dim, prefix_dim)
+        self.prefix = torch.diag(diagonal).to(self.device)  # (prefix_dim, prefix_dim)
 
         # TODO: create view into transformer mask on device
 
@@ -206,10 +209,10 @@ class TransformerQuantumState(nn.Module):
 
     def sample_states(self, buffer: torch.Tensor, num_samples_each_step: int) -> tuple[torch.Tensor, torch.Tensor]:
         """
-        Expands unique states as a binary tree into `buffer`, doubling the number of populated batch
+        Populates unique states as a binary tree into `buffer`, doubling the number of populated batch
         entries at each step. Each step draws `num_samples_each_step` multinomial samples from the
         next-token distribution of every active entry; the resulting [zeros, ones] counts are recorded
-        in `freq`, aligned along the batch dimension.
+        in `freq`, aligned along the batch dimension. Overwrites any data already present.
         """
 
         target_len = buffer.shape[0] - self.prefix_dim
@@ -232,9 +235,8 @@ class TransformerQuantumState(nn.Module):
             target_idx = i + self.prefix_dim  # Index of next token to be sampled
             log_probs = self.forward(buffer, compute_phases=False)
             probs = log_probs.detach()[target_idx - 1, :active_n, :].exp()  # log_softmax handles normalization
-            samples = torch.multinomial(probs, num_samples=num_samples_each_step, replacement=True)
-            count_ones = samples.sum(dim=-1)
-            count_zeros = num_samples_each_step - count_ones
+            count_ones = Binomial(total_count=freq[:active_n], probs=probs[:, 1]).sample().long()
+            count_zeros = freq[:active_n] - count_ones
 
             if 2 * active_n <= batch_size:
                 # Place the 1-branch continuations in fresh slots at the bottom so existing entries don't churn.
@@ -246,8 +248,12 @@ class TransformerQuantumState(nn.Module):
                 active_n *= 2
             else:
                 # Buffer is full; stop branching and sample a single token per active entry.
+                # Scale freq by the probability of the chosen spin so that the final weights
+                # reflect P(full configuration), not just P(first floor(log2(batch)) spins).
                 picks = torch.multinomial(probs, num_samples=1).squeeze(-1)
                 buffer[target_idx, torch.arange(active_n), self.prefix_dim + picks] = 1
+                chosen_probs = probs[torch.arange(active_n), picks]
+                freq[:active_n] = (freq[:active_n].float() * chosen_probs).long().clamp(min=1)
 
             # TODO: fit more chains and reduce redundant computations by forcing params and system dimensions
             # to be constant across the batch dimension. Add a mode to do this.
@@ -265,4 +271,4 @@ class TransformerQuantumState(nn.Module):
         "phase distribution" using the value actually sampled.
         """
 
-        return torch.sqrt(log_probs.exp()) * torch.exp(1j * phases)
+        return torch.exp(0.5 * log_probs + 1j * phases)
