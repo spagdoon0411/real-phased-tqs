@@ -217,8 +217,8 @@ class TransformerQuantumState(nn.Module):
 
         target_len = buffer.shape[0] - self.prefix_dim
         batch_size = buffer.shape[1]
-        freq = torch.zeros(batch_size, device=self.device, dtype=torch.long)
-        freq[0] = num_samples_each_step
+        freq = torch.zeros(batch_size, device=self.device, dtype=torch.float32)
+        freq[0] = float(num_samples_each_step)
         active_n = 1
 
         for i in range(target_len):
