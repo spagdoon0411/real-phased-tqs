@@ -258,7 +258,7 @@ class TransformerQuantumState(nn.Module):
             # TODO: fit more chains and reduce redundant computations by forcing params and system dimensions
             # to be constant across the batch dimension. Add a mode to do this.
 
-        return buffer, freq
+        return buffer, freq / freq.sum()
 
     def construct_wavefunction(self, log_probs: torch.Tensor, phases: torch.Tensor) -> torch.Tensor:
         """
