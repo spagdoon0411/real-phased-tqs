@@ -1,4 +1,5 @@
 import math
+import warnings
 
 from hamiltonian.hamiltonian import Hamiltonian
 import torch
@@ -85,7 +86,6 @@ class TransformerQuantumState(nn.Module):
         self,
         d_model: int,
         max_len: int,
-        batch_size: int,
         hamiltonian: Hamiltonian,
         device: torch.device,
         n_heads: int = 4,
@@ -96,7 +96,6 @@ class TransformerQuantumState(nn.Module):
         self.hamiltonian = hamiltonian
         self.device = device
         self.max_len = max_len
-        self.batch_size = batch_size
         self.set_prefix(hamiltonian.phys_params, hamiltonian.system_dim)
         self.spin_dim = 2  # Spin 1/2 fermions
         self.prefix_dim = hamiltonian.phys_params.shape[0] + hamiltonian.system_dim.shape[0]
@@ -166,22 +165,26 @@ class TransformerQuantumState(nn.Module):
         """
         self.hamiltonian.set_phys_params(phys_params)
         self.hamiltonian.set_system_dim(system_dim)
-        diagonal = torch.cat([system_dim.exp(), phys_params], dim=0)
+        diagonal = torch.cat([system_dim, phys_params], dim=0)
         self.prefix = torch.diag(diagonal).to(self.device)  # (prefix_dim, prefix_dim)
 
         # TODO: create view into transformer mask on device
 
     def init_spin_buffer(
         self,
+        batch_size: int,
         spin_tokens: torch.Tensor | None = None,
     ) -> torch.Tensor:
         """
         Arranges dimension information, physical parameters, and initial spin tokens in a buffer large enough to
         accommodate the maximum expected spin chain plus a prefix.
+
+        batch_size is the number of samples this buffer will hold. (E.g., can be used to initialize a microbatch
+        or a buffer holding a total collection of samples).
         """
         spin_buffer = torch.zeros(
             self.max_len + self.prefix_dim,  # sequence
-            self.batch_size,  # batch
+            batch_size,  # batch
             self.prefix_dim + self.spin_dim,  # embed
             device=self.device,
         )
@@ -207,18 +210,19 @@ class TransformerQuantumState(nn.Module):
         res = self.deembedding(buffer, compute_phases=compute_phases)
         return res  # Either log_probs or (log_probs, phases)
 
-    def sample_states(self, buffer: torch.Tensor, num_samples_each_step: int) -> tuple[torch.Tensor, torch.Tensor]:
+    def sample_states(self, num_walkers: int, sample_buffer_size: int) -> tuple[torch.Tensor, torch.Tensor]:
         """
-        Populates unique states as a binary tree into `buffer`, doubling the number of populated batch
-        entries at each step. Each step draws `num_samples_each_step` multinomial samples from the
-        next-token distribution of every active entry; the resulting [zeros, ones] counts are recorded
-        in `freq`, aligned along the batch dimension. Overwrites any data already present.
+        Allocates a buffer of width `sample_buffer_size` and populates unique states as a binary tree
+        into it, doubling the number of populated entries at each step. The root receives `num_walkers`
+        multinomial draws; at every node the [zeros, ones] counts are propagated to the children via a
+        Binomial draw against the next-token distribution. Returns `(samples, weights)` of shapes
+        `(max_len, sample_buffer_size)` and `(sample_buffer_size,)`, with weights already normalized.
         """
 
-        target_len = buffer.shape[0] - self.prefix_dim
-        batch_size = buffer.shape[1]
-        freq = torch.zeros(batch_size, device=self.device, dtype=torch.float32)
-        freq[0] = float(num_samples_each_step)
+        buffer = self.init_spin_buffer(batch_size=sample_buffer_size)
+        target_len = self.max_len
+        freq = torch.zeros(sample_buffer_size, device=self.device, dtype=torch.float32)
+        freq[0] = float(num_walkers)
         active_n = 1
 
         for i in range(target_len):
@@ -238,7 +242,7 @@ class TransformerQuantumState(nn.Module):
             count_ones = Binomial(total_count=freq[:active_n], probs=probs[:, 1]).sample().long()
             count_zeros = freq[:active_n] - count_ones
 
-            if 2 * active_n <= batch_size:
+            if 2 * active_n <= sample_buffer_size:
                 # Place the 1-branch continuations in fresh slots at the bottom so existing entries don't churn.
                 buffer[:target_idx, active_n : 2 * active_n, :] = buffer[:target_idx, :active_n, :]
                 buffer[target_idx, :active_n, self.prefix_dim] = 1
@@ -251,14 +255,118 @@ class TransformerQuantumState(nn.Module):
                 # Scale freq by the probability of the chosen spin so that the final weights
                 # reflect P(full configuration), not just P(first floor(log2(batch)) spins).
                 picks = torch.multinomial(probs, num_samples=1).squeeze(-1)
-                buffer[target_idx, torch.arange(active_n), self.prefix_dim + picks] = 1
-                chosen_probs = probs[torch.arange(active_n), picks]
-                freq[:active_n] = (freq[:active_n].float() * chosen_probs).long().clamp(min=1)
+                idx = torch.arange(active_n, device=self.device)
+                buffer[target_idx, idx, self.prefix_dim + picks] = 1
+                # buffer[target_idx, torch.arange(active_n), self.prefix_dim + picks] = 1
+                # chosen_probs = probs[torch.arange(active_n), picks]
+                # freq[:active_n] = (freq[:active_n].float() * chosen_probs).long().clamp(min=1)
 
             # TODO: fit more chains and reduce redundant computations by forcing params and system dimensions
             # to be constant across the batch dimension. Add a mode to do this.
 
-        return buffer, freq / freq.sum()
+        samples = buffer[self.prefix_dim : self.prefix_dim + self.max_len, :, self.prefix_dim :].argmax(dim=-1)
+        return samples, freq / freq.sum()
+
+    def sample_iid_microbatches(
+        self,
+        num_walkers: int,
+        microbatch_size: int,
+        sample_buffer_size: int,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        """
+        Draws `num_walkers` IID autoregressive samples from the model in chunks of `microbatch_size`
+        per forward pass, writes them into a pre-allocated buffer of width `sample_buffer_size`,
+        deduplicates the populated prefix, and returns the unique configurations together with
+        normalized multiplicity weights. Emits a warning if `num_walkers` is not divisible by
+        `microbatch_size`.
+        """
+        if num_walkers <= 0:
+            raise ValueError(f"num_walkers must be positive, got {num_walkers}")
+        if microbatch_size <= 0:
+            raise ValueError(f"microbatch_size must be positive, got {microbatch_size}")
+        if sample_buffer_size < num_walkers:
+            raise ValueError(
+                f"sample_buffer_size={sample_buffer_size} must be >= num_walkers={num_walkers}"
+            )
+        if sample_buffer_size % microbatch_size != 0:
+            raise ValueError(
+                f"sample_buffer_size={sample_buffer_size} must be a multiple of "
+                f"microbatch_size={microbatch_size}"
+            )
+
+        if num_walkers % microbatch_size != 0:
+            warnings.warn(
+                f"num_walkers={num_walkers} is not divisible by microbatch_size={microbatch_size}; "
+                f"the last microbatch will be partially used",
+                stacklevel=2,
+            )
+
+        num_microbatches_needed = (num_walkers + microbatch_size - 1) // microbatch_size
+        microbatch_buffer = self.init_spin_buffer(batch_size=microbatch_size)
+        row_idx = torch.arange(microbatch_size, device=self.device)
+        sample_buffer = torch.empty(
+            self.max_len,
+            sample_buffer_size,
+            dtype=torch.int64,
+            device=self.device,
+        )
+        for i in range(num_microbatches_needed):
+            self._sample_microbatch_into(
+                microbatch_buffer, row_idx, sample_buffer[:, i * microbatch_size : (i + 1) * microbatch_size]
+            )
+        return self._weighted_unique(sample_buffer[:, :num_walkers])
+
+    def _weighted_unique(self, samples: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+        """
+        Deduplicates chain samples and returns `(samples_unique, weights)` where weights are
+        the normalized multiplicities of each unique configuration.
+        """
+        samples_unique, counts = self._dedup_chains(samples)
+        weights = counts.to(torch.get_default_dtype())
+        return samples_unique, weights / weights.sum()
+
+    def _sample_microbatch_into(
+        self,
+        microbatch_buffer: torch.Tensor,
+        row_idx: torch.Tensor,
+        destination: torch.Tensor,
+    ) -> None:
+        """
+        Fills the spin region of `microbatch_buffer` with one microbatch of IID autoregressive samples
+        and writes the resulting `(max_len, microbatch_size)` chain tensor into `destination` in place.
+        """
+        spin_region = slice(self.prefix_dim, self.prefix_dim + self.max_len)
+        microbatch_buffer[spin_region, :, self.prefix_dim :] = 0
+        for i in range(self.max_len):
+            self._sample_next_token(microbatch_buffer, i + self.prefix_dim, row_idx)
+        torch.argmax(microbatch_buffer[spin_region, :, self.prefix_dim :], dim=-1, out=destination)
+
+    def _sample_next_token(self, buffer: torch.Tensor, target_idx: int, row_idx: torch.Tensor) -> None:
+        """
+        Runs one forward pass, samples a single spin per row from the next-token distribution at
+        `target_idx`, and writes the one-hot result into `buffer` in place.
+        """
+        log_probs = self.forward(buffer, compute_phases=False)
+        probs = log_probs.detach()[target_idx - 1, :, :].exp()
+        picks = torch.multinomial(probs, num_samples=1).squeeze(-1)
+        buffer[target_idx, row_idx, self.prefix_dim + picks] = 1
+
+    @staticmethod
+    def _dedup_chains(samples: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+        """
+        Deduplicates `(n, N)` binary chain samples by bit-packing each chain into an int64 code
+        and grouping with `torch.unique`. Returns `(samples_unique, counts)` of shapes `(n, n_unique)`
+        and `(n_unique,)`.
+        """
+        n, N = samples.shape
+        if n > 64:
+            raise ValueError(f"_dedup_chains requires n <= 64 for int64 bit-packing, got n={n}")
+        pow2 = 1 << torch.arange(n, device=samples.device, dtype=torch.int64)
+        codes = (samples.to(torch.int64) * pow2.unsqueeze(1)).sum(dim=0)
+        unique_codes, inverse, counts = torch.unique(codes, return_inverse=True, return_counts=True)
+        first_pos = torch.empty_like(unique_codes, dtype=torch.long)
+        first_pos.scatter_(0, inverse, torch.arange(N, device=samples.device))
+        return samples[:, first_pos], counts
 
     def construct_wavefunction(self, log_probs: torch.Tensor, phases: torch.Tensor) -> torch.Tensor:
         """

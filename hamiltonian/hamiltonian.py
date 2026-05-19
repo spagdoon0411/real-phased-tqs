@@ -12,10 +12,17 @@ _PAULI = {
 
 
 class Hamiltonian:
-    def __init__(self, n_params: int, system_dim: torch.Tensor, phys_params: torch.Tensor):
+    def __init__(
+        self,
+        n_params: int,
+        system_dim: torch.Tensor,
+        phys_params: torch.Tensor,
+        periodic: bool = False,
+    ):
         self.n_params = n_params
         self.system_dim = system_dim
         self.phys_params = phys_params
+        self.periodic = bool(periodic)
 
     def set_system_dim(self, system_dim: torch.Tensor) -> None:
         if system_dim.ndim > 1:

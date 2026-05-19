@@ -7,15 +7,6 @@ from model.pauli_observables import compute_grad, compute_observable
 from model.tqs import TransformerQuantumState
 
 
-def _samples_from_buffer(model: TransformerQuantumState, buffer: torch.Tensor) -> torch.Tensor:
-    """
-    Extracts binary `(n, batch)` spin configurations from the one-hot spin slots of `buffer`
-    populated by `model.sample_states`.
-    """
-    spin_one_hot = buffer[model.prefix_dim : model.prefix_dim + model.max_len, :, model.prefix_dim :]
-    return spin_one_hot.argmax(dim=-1)
-
-
 def _local_energy(
     model: TransformerQuantumState,
     hamiltonian: Hamiltonian,
@@ -40,15 +31,15 @@ def train(
     hamiltonian: Hamiltonian,
     optimizer: torch.optim.Optimizer,
     n_steps: int,
-    num_samples_each_step: int,
+    sampler: Callable[[], tuple[torch.Tensor, torch.Tensor]],
     on_step: Callable[[int, dict], None] | None = None,
 ) -> None:
     """
-    Runs a variational Monte Carlo training loop against `hamiltonian` using the model's
-    tree-expansion sampler. Each step:
+    Runs a variational Monte Carlo training loop with energies computed via `hamiltonian`
+    using the supplied `sampler` callable. Each step:
 
-        1. Fills `model.init_spin_buffer()` via `model.sample_states`, yielding a batch of
-           unique basis states together with per-leaf multinomial counts `freq`.
+        1. Calls `sampler()` to obtain `(samples, sample_weight)` of shapes `(n, batch)` and
+           `(batch,)`, where weights are already normalized.
         2. Computes E_loc(x) as the sum of `compute_observable` values across every
            observable tuple returned by `hamiltonian.observables()`.
         3. Builds the REINFORCE-style surrogate loss via `compute_grad` and steps the
@@ -59,12 +50,7 @@ def train(
     """
 
     for step in range(n_steps):
-        buffer = model.init_spin_buffer()
-        buffer, freq = model.sample_states(buffer, num_samples_each_step)
-
-        samples = _samples_from_buffer(model, buffer)
-        sample_weight = freq.to(torch.get_default_dtype())
-        sample_weight = sample_weight / sample_weight.sum()
+        samples, sample_weight = sampler()
 
         with torch.no_grad():
             Eloc = _local_energy(model, hamiltonian, samples, sample_weight)
@@ -78,10 +64,12 @@ def train(
         if on_step is not None:
             energy = (Eloc * sample_weight).sum().real
             variance = ((Eloc - energy) * (Eloc - energy).conj() * sample_weight).sum().real
+            n_sites = int(hamiltonian.system_dim.prod().item())
             on_step(
                 step,
                 {
                     "energy": energy.item(),
+                    "energy_per_site": energy.item() / n_sites,
                     "loss": loss.detach().item(),
                     "variance": variance.item(),
                 },

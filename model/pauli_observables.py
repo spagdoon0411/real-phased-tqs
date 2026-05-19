@@ -127,7 +127,7 @@ def compute_observable(model, samples, sample_weight, observable, batch_mean=Tru
     Y_phase = torch.tensor([1, -1j, -1, 1j])[Y_count % 4]
 
     if flip_sites.any():
-        _, _, psi = _psi_along_samples(model, samples)
+        log_amp, log_phase, _ = _psi_along_samples(model, samples)
 
     if phase_sites.any():
         spin_pm = (1 - 2 * samples).to(torch.get_default_dtype())  # +-1, (n, batch)
@@ -135,7 +135,7 @@ def compute_observable(model, samples, sample_weight, observable, batch_mean=Tru
     for flip_sites_i in flip_sites:
         if flip_sites_i.any():
             flip_idx = spin_idx.T[flip_sites_i].T  # (n_op, n_flip)
-            psixp_over_psix = compute_flip(model, samples, flip_idx, psi)  # (n_op, batch)
+            psixp_over_psix = compute_flip(model, samples, flip_idx, log_amp, log_phase)  # (n_op, batch)
             flip_results.append(psixp_over_psix)
         else:
             flip_results.append(torch.ones(1))
@@ -165,54 +165,46 @@ def compute_observable(model, samples, sample_weight, observable, batch_mean=Tru
     return results
 
 
-PSI_RATIO_CLAMP = 10.0
-
-
-def compute_flip(model, samples, flip_idx, psi):
+def compute_flip(model, samples, flip_idx, log_amp, log_phase):
     """
     Parameters
     ----------
     model: the transformer model
-    samples : Tensor, (n, batch)
+    samples : Tensor, (seq, n_samples)
         samples drawn from the wave function
     flip_idx : Tensor, (n_op, n_flip)
         indices with either X or Y acting on it
-    psi : Tensor, (batch, ), complex
-        pre-computed wave function psi(x)
+    log_amp : Tensor, (n_samples,)
+        sum of log-amplitudes for the original samples
+    log_phase : Tensor, (n_samples,)
+        sum of phases for the original samples
 
     Returns
     -------
-    psi(x') / psi(x) : (n_op, batch)
-
-        O_loc(x) = O_{x, x'} psi(x') / psi(x)
-        This function computes psi(x') / psi(x) when x'!=x
-
-    The ratio is clamped to magnitude `PSI_RATIO_CLAMP` to suppress outliers from
-    rarely-sampled x where |psi(x)| -> 0.
+    psi(x') / psi(x) : (n_op, n_samples)
     """
 
-    n, batch = samples.shape
+    seq, n_samples = samples.shape
     n_op, n_flip = flip_idx.shape
 
-    samples_flipped = samples.expand(n_op, -1, -1).transpose(0, 1).clone()  # (n, n_op, batch)
+    samples_flipped = samples.expand(n_op, -1, -1).transpose(0, 1).clone()  # (seq, n_op, n_samples)
     flip_mask = torch.zeros_like(samples_flipped, dtype=torch.bool)
-    #         (n_op, n_flip)        (n_op, 1)  indices selected: (n_op, n_flip, batch)
+    #         (n_op, n_flip)        (n_op, 1)  indices selected: (n_op, n_flip, n_samples)
     flip_mask[flip_idx, torch.arange(n_op).unsqueeze(1), :] = 1
     samples_flipped[flip_mask] = 1 - samples_flipped[flip_mask]
 
-    _, _, psi_flipped = _psi_along_samples(model, samples_flipped.reshape(n, n_op * batch))
-    psi_flipped = psi_flipped.reshape(n_op, batch)
+    log_amp_1, log_phase_1, _ = _psi_along_samples(model, samples_flipped.reshape(seq, n_op * n_samples))
+    log_amp_1 = log_amp_1.reshape(n_op, n_samples)
+    log_phase_1 = log_phase_1.reshape(n_op, n_samples)
 
-    ratio = psi_flipped / psi
-    mag = ratio.abs()
-    return torch.where(mag < PSI_RATIO_CLAMP, ratio, ratio / mag.clamp(min=1e-12) * PSI_RATIO_CLAMP)
+    return (((log_amp_1 - log_amp) + 1j * (log_phase_1 - log_phase)) / 2).exp()
 
 
 def compute_phase(spin_pm, phase_idx):
     """
     Parameters
     ----------
-    spin_pm : Tensor, (n, batch)
+    spin_pm : Tensor, (seq, n_samples)
         +-1, sampled spin configurations
     phase_idx : Tensor, (n_op, n_phase)
         indices with either Y or Z acting on it
@@ -220,10 +212,10 @@ def compute_phase(spin_pm, phase_idx):
 
     Returns
     -------
-    O_{x, x'} : (n_op, batch)
+    O_{x, x'} : (n_op, n_samples)
         where x is given
         O_loc(x) = O_{x, x'} psi(x') / psi(x)
     """
-    n, batch = spin_pm.shape
-    spin_pm_relevant = spin_pm[phase_idx.unsqueeze(-1), torch.arange(batch)]  # (n_op, n_phase, batch), +-1
-    return spin_pm_relevant.prod(dim=1)  # (n_op, batch)
+    seq, n_samples = spin_pm.shape
+    spin_pm_relevant = spin_pm[phase_idx.unsqueeze(-1), torch.arange(n_samples)]  # (n_op, n_phase, n_samples), +-1
+    return spin_pm_relevant.prod(dim=1)  # (n_op, n_samples)

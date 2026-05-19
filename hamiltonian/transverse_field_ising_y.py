@@ -3,11 +3,11 @@ import torch
 from hamiltonian.hamiltonian import Hamiltonian
 
 
-class TransverseFieldIsing(Hamiltonian):
+class TransverseFieldIsingY(Hamiltonian):
     """
-    Transverse-field Ising Hamiltonian on a 1D open chain:
+    Transverse-field Ising Hamiltonian on a 1D open chain with a Y-direction field:
 
-        H = -J sum_i Z_i Z_{i+1} - h sum_i X_i
+        H = -J sum_i Z_i Z_{i+1} - h sum_i Y_i
 
     system_dim: (L,) chain length.
     phys_params: (h,) transverse-field strength.
@@ -41,9 +41,9 @@ class TransverseFieldIsing(Hamiltonian):
         site_idx = torch.arange(L).unsqueeze(1)
 
         zz_coefs = -self.coupling * torch.ones(bond_idx.shape[0])
-        x_coefs = -h * torch.ones(L)
+        y_coefs = -h * torch.ones(L)
 
         return [
             (["ZZ"], [zz_coefs], bond_idx),
-            (["X"], [x_coefs], site_idx),
+            (["Y"], [y_coefs], site_idx),
         ]
