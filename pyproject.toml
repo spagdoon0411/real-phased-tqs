@@ -8,6 +8,7 @@ dependencies = [
     "ipykernel>=7.2.0",
     "matplotlib>=3.10.8",
     "scipy>=1.17.1",
+    "tabulate>=0.10.0",
     "torch",
     "torchinfo>=1.8.0",
     "torchsummary>=1.5.1",

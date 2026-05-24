@@ -1,4 +1,5 @@
 import torch
+from tabulate import tabulate
 
 from hamiltonian.transverse_field_ising import TransverseFieldIsing
 from hamiltonian.transverse_field_ising_y import TransverseFieldIsingY
@@ -36,9 +37,35 @@ def _select_device() -> torch.device:
     return torch.device("cpu")
 
 
+def _print_summary(device: torch.device) -> None:
+    device_str = str(device)
+    if device.type == "cuda":
+        device_str = f"cuda ({torch.cuda.get_device_name(device)})"
+
+    rows = [
+        ["Hamiltonian", "TFI-X" if hamiltonian_id == "x" else "TFI-Y"],
+        ["Chain length (L)", L],
+        ["Field strength (h)", h],
+        ["Coupling (J)", J],
+        ["Periodic", periodic],
+        ["Sampler", sampler_id],
+        ["Steps", n_steps],
+        ["Warmup steps", warmup_steps],
+        ["Walkers", num_walkers],
+        ["Microbatch size", microbatch_size],
+        ["Sample buffer size", sample_buffer_size],
+        ["d_model", d_model],
+        ["Feedforward dim", dim_feedforward],
+        ["Layers", n_layers],
+        ["Heads", n_heads],
+        ["Device", device_str],
+    ]
+    print(tabulate(rows, headers=["Parameter", "Value"], tablefmt="rounded_outline"))
+
 
 def main() -> None:
     device = _select_device()
+    _print_summary(device)
 
     ham_cls = TransverseFieldIsing if hamiltonian_id == "x" else TransverseFieldIsingY
     hamiltonian = ham_cls(
