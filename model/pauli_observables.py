@@ -31,8 +31,8 @@ def _psi_along_samples(model, samples):
     log_probs = log_probs[model.prefix_dim - 1 : model.prefix_dim - 1 + n]
     phases = phases[model.prefix_dim - 1 : model.prefix_dim - 1 + n]
 
-    n_idx = torch.arange(n).unsqueeze(1)
-    batch_idx = torch.arange(batch).unsqueeze(0)
+    n_idx = torch.arange(n, device=model.device).unsqueeze(1)
+    batch_idx = torch.arange(batch, device=model.device).unsqueeze(0)
     log_probs = log_probs[n_idx, batch_idx, spin_idx].sum(dim=0)
     phases = phases[n_idx, batch_idx, spin_idx].sum(dim=0)
 
@@ -107,7 +107,7 @@ def compute_observable(model, samples, sample_weight, observable, batch_mean=Tru
     pauli_strs, coefs, spin_idx = observable
     n_type = len(pauli_strs)
     # ord('X')=88, maps 'X' to 0, 'Y' to 1, 'Z' to 2
-    pauli_num = torch.tensor([[ord(c) - 88 for c in str_i] for str_i in pauli_strs])  # (n_type, n_site)
+    pauli_num = torch.tensor([[ord(c) - 88 for c in str_i] for str_i in pauli_strs], device=model.device)  # (n_type, n_site)
     X_sites = pauli_num == 0
     Y_sites = pauli_num == 1
     Z_sites = pauli_num == 2
@@ -124,7 +124,7 @@ def compute_observable(model, samples, sample_weight, observable, batch_mean=Tru
     # Y = -i Z X
     # compute phase like Z, flip like X, then account for the additional -i
     Y_count = Y_sites.sum(dim=1)  # (n_type, )
-    Y_phase = torch.tensor([1, -1j, -1, 1j])[Y_count % 4]
+    Y_phase = torch.tensor([1, -1j, -1, 1j], device=model.device)[Y_count % 4]
 
     if flip_sites.any():
         log_amp, log_phase, _ = _psi_along_samples(model, samples)
@@ -138,7 +138,7 @@ def compute_observable(model, samples, sample_weight, observable, batch_mean=Tru
             psixp_over_psix = compute_flip(model, samples, flip_idx, log_amp, log_phase)  # (n_op, batch)
             flip_results.append(psixp_over_psix)
         else:
-            flip_results.append(torch.ones(1))
+            flip_results.append(torch.ones(1, device=model.device))
 
     for phase_sites_i in phase_sites:
         if phase_sites_i.any():
@@ -146,7 +146,7 @@ def compute_observable(model, samples, sample_weight, observable, batch_mean=Tru
             Oxxp = compute_phase(spin_pm, phase_idx)  # (n_op, batch)
             phase_results.append(Oxxp)
         else:
-            phase_results.append(torch.ones(1))
+            phase_results.append(torch.ones(1, device=model.device))
 
     results = []
     for i in range(n_type):
@@ -190,7 +190,7 @@ def compute_flip(model, samples, flip_idx, log_amp, log_phase):
     samples_flipped = samples.expand(n_op, -1, -1).transpose(0, 1).clone()  # (seq, n_op, n_samples)
     flip_mask = torch.zeros_like(samples_flipped, dtype=torch.bool)
     #         (n_op, n_flip)        (n_op, 1)  indices selected: (n_op, n_flip, n_samples)
-    flip_mask[flip_idx, torch.arange(n_op).unsqueeze(1), :] = 1
+    flip_mask[flip_idx, torch.arange(n_op, device=samples.device).unsqueeze(1), :] = 1
     samples_flipped[flip_mask] = 1 - samples_flipped[flip_mask]
 
     log_amp_1, log_phase_1, _ = _psi_along_samples(model, samples_flipped.reshape(seq, n_op * n_samples))

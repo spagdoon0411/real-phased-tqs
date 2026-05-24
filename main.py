@@ -25,15 +25,25 @@ warmup_steps = 4000
 d_model = 32
 n_layers = 8
 n_heads = 8
+def _select_device() -> torch.device:
+    if torch.cuda.is_available():
+        return torch.device("cuda")
+    if torch.backends.mps.is_available():
+        return torch.device("mps")
+    return torch.device("cpu")
+
 
 
 def main() -> None:
+    device = _select_device()
+
     ham_cls = TransverseFieldIsing if hamiltonian_id == "x" else TransverseFieldIsingY
     hamiltonian = ham_cls(
         system_dim=torch.tensor([float(L)]),
         phys_params=torch.tensor([h]),
         coupling=J,
         periodic=periodic,
+        device=device,
     )
 
     model = TransformerQuantumState(

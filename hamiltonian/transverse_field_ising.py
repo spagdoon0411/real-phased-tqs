@@ -19,12 +19,14 @@ class TransverseFieldIsing(Hamiltonian):
         phys_params: torch.Tensor,
         coupling: float = 1.0,
         periodic: bool = False,
+        device: torch.device = torch.device("cpu"),
     ):
         super().__init__(
             n_params=1,
             system_dim=system_dim,
             phys_params=phys_params,
             periodic=periodic,
+            device=device,
         )
         self.coupling = coupling
 
@@ -32,16 +34,16 @@ class TransverseFieldIsing(Hamiltonian):
         L = int(self.system_dim[0].item())
         h = self.phys_params[0]
 
-        left = torch.arange(L - 1)
-        right = torch.arange(1, L)
+        left = torch.arange(L - 1, device=self.device)
+        right = torch.arange(1, L, device=self.device)
         if self.periodic and L > 1:
-            left = torch.cat([left, torch.tensor([L - 1])])
-            right = torch.cat([right, torch.tensor([0])])
+            left = torch.cat([left, torch.tensor([L - 1], device=self.device)])
+            right = torch.cat([right, torch.tensor([0], device=self.device)])
         bond_idx = torch.stack([left, right], dim=1)
-        site_idx = torch.arange(L).unsqueeze(1)
+        site_idx = torch.arange(L, device=self.device).unsqueeze(1)
 
-        zz_coefs = -self.coupling * torch.ones(bond_idx.shape[0])
-        x_coefs = -h * torch.ones(L)
+        zz_coefs = -self.coupling * torch.ones(bond_idx.shape[0], device=self.device)
+        x_coefs = -h * torch.ones(L, device=self.device)
 
         return [
             (["ZZ"], [zz_coefs], bond_idx),
