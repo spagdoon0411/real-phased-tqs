@@ -25,6 +25,9 @@ warmup_steps = 4000
 d_model = 32
 n_layers = 8
 n_heads = 8
+dim_feedforward = 4 * d_model
+
+
 def _select_device() -> torch.device:
     if torch.cuda.is_available():
         return torch.device("cuda")
@@ -50,6 +53,7 @@ def main() -> None:
         d_model=d_model,
         n_layers=n_layers,
         n_heads=n_heads,
+        dim_feedforward=dim_feedforward,
         max_len=L,
         hamiltonian=hamiltonian,
         device=device,

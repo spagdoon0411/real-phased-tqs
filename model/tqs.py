@@ -91,6 +91,7 @@ class TransformerQuantumState(nn.Module):
         device: torch.device,
         n_heads: int = 4,
         n_layers: int = 2,
+        dim_feedforward: int | None = None,
         dropout: float = 0.0,
     ):
         super().__init__()
@@ -114,7 +115,7 @@ class TransformerQuantumState(nn.Module):
             encoder_layer=nn.TransformerEncoderLayer(
                 d_model=d_model,
                 nhead=n_heads,
-                dim_feedforward=4 * d_model,
+                dim_feedforward=dim_feedforward if dim_feedforward is not None else 4 * d_model,
                 dropout=dropout,
                 batch_first=False,
                 device=device,
