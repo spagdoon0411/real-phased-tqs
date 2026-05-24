@@ -77,7 +77,8 @@ def main() -> None:
             f"energy/site {diagnostics['energy_per_site']:+.6f}  "
             f"variance {diagnostics['variance']:.6f}  "
             f"loss {diagnostics['loss']:+.6f}  "
-            f"lr {lr:.2e}"
+            f"lr {lr:.2e}  "
+            f"it {diagnostics['iter_time']:.3f}s"
         )
 
     match sampler_id:

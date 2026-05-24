@@ -1,3 +1,4 @@
+import time
 from typing import Callable
 
 import torch
@@ -51,6 +52,8 @@ def train(
     """
 
     for step in range(n_steps):
+        t0 = time.perf_counter()
+
         samples, sample_weight = sampler()
 
         with torch.no_grad():
@@ -75,5 +78,6 @@ def train(
                     "energy_per_site": energy.item() / n_sites,
                     "loss": loss.detach().item(),
                     "variance": variance.item(),
+                    "iter_time": time.perf_counter() - t0,
                 },
             )
