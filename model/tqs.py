@@ -166,7 +166,7 @@ class TransformerQuantumState(nn.Module):
         """
         self.hamiltonian.set_phys_params(phys_params)
         self.hamiltonian.set_system_dim(system_dim)
-        diagonal = torch.cat([system_dim, phys_params], dim=0)
+        diagonal = torch.cat([system_dim.log(), phys_params], dim=0)
         self.prefix = torch.diag(diagonal).to(self.device)  # (prefix_dim, prefix_dim)
 
         # TODO: create view into transformer mask on device
