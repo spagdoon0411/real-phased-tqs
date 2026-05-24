@@ -16,10 +16,10 @@ periodic = False
 device = torch.device("cpu")
 sampler_id = "iid"
 n_steps = 2000
-lr = 1e-4
 num_walkers = 1024
 microbatch_size = 128  # Ignored for the tree sampler
 sample_buffer_size = 1024
+warmup_steps = 4000
 
 # Model parameters
 d_model = 32
@@ -45,8 +45,15 @@ def main() -> None:
         device=device,
     )
 
-    # optimizer = torch.optim.AdamW(model.parameters(), lr=1e-2, weight_decay=1e-8)
-    optimizer = torch.optim.Adam(model.parameters(), lr=lr)
+    optimizer = torch.optim.Adam(
+        model.parameters(), lr=1.0, betas=(0.9, 0.98), eps=1e-9
+    )
+
+    def noam_lambda(step: int) -> float:
+        step = max(step, 1)
+        return d_model ** (-0.5) * min(step ** (-0.5), step * warmup_steps ** (-1.5))
+
+    scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda=noam_lambda)
 
     def log(step: int, diagnostics: dict) -> None:
         lr = optimizer.param_groups[0]["lr"]
@@ -84,6 +91,7 @@ def main() -> None:
         n_steps=n_steps,
         sampler=sampler,
         on_step=log,
+        scheduler=scheduler,
     )
 
 

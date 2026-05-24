@@ -33,6 +33,7 @@ def train(
     n_steps: int,
     sampler: Callable[[], tuple[torch.Tensor, torch.Tensor]],
     on_step: Callable[[int, dict], None] | None = None,
+    scheduler: torch.optim.lr_scheduler.LRScheduler | None = None,
 ) -> None:
     """
     Runs a variational Monte Carlo training loop with energies computed via `hamiltonian`
@@ -60,6 +61,8 @@ def train(
         loss.backward()
         torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
         optimizer.step()
+        if scheduler is not None:
+            scheduler.step()
 
         if on_step is not None:
             energy = (Eloc * sample_weight).sum().real
