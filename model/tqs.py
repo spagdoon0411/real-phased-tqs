@@ -214,6 +214,7 @@ class TransformerQuantumState(nn.Module):
         res = self.deembedding(buffer, compute_phases=compute_phases)
         return res  # Either log_probs or (log_probs, phases)
 
+    @torch.no_grad()
     def sample_states(self, num_walkers: int, sample_buffer_size: int) -> tuple[torch.Tensor, torch.Tensor]:
         """
         Allocates a buffer of width `sample_buffer_size` and populates unique states as a binary tree
@@ -271,6 +272,7 @@ class TransformerQuantumState(nn.Module):
         samples = buffer[self.prefix_dim : self.prefix_dim + self.max_len, :, self.prefix_dim :].argmax(dim=-1)
         return samples, freq / freq.sum()
 
+    @torch.no_grad()
     def sample_iid_microbatches(
         self,
         num_walkers: int,
