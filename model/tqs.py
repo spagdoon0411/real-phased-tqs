@@ -131,30 +131,32 @@ class TransformerQuantumState(nn.Module):
         self.initialize_weights()
 
     def initialize_weights(self) -> None:
-        """
-        Applies Xavier-uniform initialization to every `nn.Linear` weight (including the
-        attention output projections), Xavier-uniform to the fused `in_proj_weight` of each
-        `nn.MultiheadAttention`, zero for all biases, and the identity `(weight=1, bias=0)`
-        for `nn.LayerNorm`.
-        """
+        # Re-initializes only the embedding and head linears. The TransformerEncoder
+        # layers are left at PyTorch defaults (Kaiming-uniform) to avoid overscaling
+        # residual contributions at init.
+        nn.init.normal_(self.embedding.linear.weight, mean=0.0, std=0.02)
+        nn.init.zeros_(self.embedding.linear.bias)
 
-        def _init(module: nn.Module) -> None:
-            if isinstance(module, nn.Linear):
-                nn.init.xavier_uniform_(module.weight)
-                if module.bias is not None:
-                    nn.init.zeros_(module.bias)
-            elif isinstance(module, nn.LayerNorm):
-                nn.init.ones_(module.weight)
-                nn.init.zeros_(module.bias)
-            elif isinstance(module, nn.MultiheadAttention):
-                if module.in_proj_weight is not None:
-                    nn.init.xavier_uniform_(module.in_proj_weight)
-                if module.in_proj_bias is not None:
-                    nn.init.zeros_(module.in_proj_bias)
-            elif isinstance(module, nn.Embedding):
-                nn.init.normal_(module.weight, mean=0.0, std=0.02)
+        nn.init.xavier_uniform_(self.deembedding.linear.weight)
+        nn.init.zeros_(self.deembedding.linear.bias)
 
-        self.apply(_init)
+        # def _init(module: nn.Module) -> None:
+        #     if isinstance(module, nn.Linear):
+        #         nn.init.xavier_uniform_(module.weight)
+        #         if module.bias is not None:
+        #             nn.init.zeros_(module.bias)
+        #     elif isinstance(module, nn.LayerNorm):
+        #         nn.init.ones_(module.weight)
+        #         nn.init.zeros_(module.bias)
+        #     elif isinstance(module, nn.MultiheadAttention):
+        #         if module.in_proj_weight is not None:
+        #             nn.init.xavier_uniform_(module.in_proj_weight)
+        #         if module.in_proj_bias is not None:
+        #             nn.init.zeros_(module.in_proj_bias)
+        #     elif isinstance(module, nn.Embedding):
+        #         nn.init.normal_(module.weight, mean=0.0, std=0.02)
+        #
+        # self.apply(_init)
 
     def set_prefix(
         self,
@@ -286,13 +288,10 @@ class TransformerQuantumState(nn.Module):
         if microbatch_size <= 0:
             raise ValueError(f"microbatch_size must be positive, got {microbatch_size}")
         if sample_buffer_size < num_walkers:
-            raise ValueError(
-                f"sample_buffer_size={sample_buffer_size} must be >= num_walkers={num_walkers}"
-            )
+            raise ValueError(f"sample_buffer_size={sample_buffer_size} must be >= num_walkers={num_walkers}")
         if sample_buffer_size % microbatch_size != 0:
             raise ValueError(
-                f"sample_buffer_size={sample_buffer_size} must be a multiple of "
-                f"microbatch_size={microbatch_size}"
+                f"sample_buffer_size={sample_buffer_size} must be a multiple of microbatch_size={microbatch_size}"
             )
 
         if num_walkers % microbatch_size != 0:
