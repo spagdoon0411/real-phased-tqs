@@ -68,9 +68,7 @@ def compute_grad(model, samples, sample_weight, Eloc):
 
     log_probs, phases, _ = _psi_along_samples(model, samples)
     E_model = (Eloc * sample_weight).sum().detach()  # (1, )
-    scale = 1 / E_model.abs()
-    if scale > 5:
-        scale = 5
+    scale = torch.clamp(1 / E_model.abs(), max=5)
     E = Eloc - E_model  # (batch, )
 
     loss = ((E.real * log_probs + E.imag * phases) * sample_weight).sum() * scale
