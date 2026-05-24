@@ -46,9 +46,10 @@ class Embedding(nn.Module):
         super().__init__()
         self.input_dimensions = n_dimensions + n_params + spin_dim
         self.linear = nn.Linear(self.input_dimensions, d_model, device=device)
+        self.d_model = d_model
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        return self.linear(x)
+        return self.linear(x) * math.sqrt(self.d_model)
 
 
 class Deembedding(nn.Module):
