@@ -210,7 +210,8 @@ class TransformerQuantumState(nn.Module):
         buffer = buffer.to(self.device)  # (seq_len, batch_size, prefix_dim + spin_dim)
         buffer = self.embedding(buffer)  # (seq_len, batch_size, d_model)
         buffer = self.pos_encoding(buffer)
-        buffer = self.transformer(buffer, mask=self.mask, is_causal=True)
+        seq_len = buffer.size(0)
+        buffer = self.transformer(buffer, mask=self.mask[:seq_len, :seq_len], is_causal=True)
         res = self.deembedding(buffer, compute_phases=compute_phases)
         return res  # Either log_probs or (log_probs, phases)
 
@@ -242,8 +243,8 @@ class TransformerQuantumState(nn.Module):
             # through the forward pass and ignoring sequence positions that have not been reached yet.
 
             target_idx = i + self.prefix_dim  # Index of next token to be sampled
-            log_probs = self.forward(buffer, compute_phases=False)
-            probs = log_probs.detach()[target_idx - 1, :active_n, :].exp()  # log_softmax handles normalization
+            log_probs = self.forward(buffer[:target_idx, :active_n], compute_phases=False)
+            probs = log_probs.detach()[-1, :, :].exp()  # log_softmax handles normalization
             count_ones = Binomial(total_count=freq[:active_n], probs=probs[:, 1]).sample().long()
             count_zeros = freq[:active_n] - count_ones
 
@@ -349,8 +350,8 @@ class TransformerQuantumState(nn.Module):
         Runs one forward pass, samples a single spin per row from the next-token distribution at
         `target_idx`, and writes the one-hot result into `buffer` in place.
         """
-        log_probs = self.forward(buffer, compute_phases=False)
-        probs = log_probs.detach()[target_idx - 1, :, :].exp()
+        log_probs = self.forward(buffer[:target_idx], compute_phases=False)
+        probs = log_probs.detach()[-1, :, :].exp()
         picks = torch.multinomial(probs, num_samples=1).squeeze(-1)
         buffer[target_idx, row_idx, self.prefix_dim + picks] = 1
 
