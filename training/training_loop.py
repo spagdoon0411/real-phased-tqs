@@ -81,6 +81,7 @@ def train(
                     "energy_per_site": energy.item() / n_sites,
                     "loss": loss.detach().item(),
                     "variance": variance.item(),
+                    "n_unique": samples.shape[1],
                     "iter_time": time.perf_counter() - t0,
                 },
             )
