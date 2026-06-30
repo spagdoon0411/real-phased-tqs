@@ -17,9 +17,9 @@ periodic = False
 device = torch.device("cpu")
 sampler_id = "iid"
 n_steps = 2000
-num_walkers = 1024
-microbatch_size = 128  # Ignored for the tree sampler
-sample_buffer_size = 1024
+num_walkers = 2048
+microbatch_size = 2048  # Ignored for the tree sampler
+sample_buffer_size = 2048
 warmup_steps = 4000
 
 # Model parameters
