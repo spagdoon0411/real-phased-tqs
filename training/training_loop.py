@@ -56,11 +56,14 @@ def train(
 
         samples, sample_weight = sampler()
 
-        with torch.no_grad():
+        autocast = torch.autocast(device_type=model.device.type, dtype=torch.bfloat16)
+
+        with torch.no_grad(), autocast:
             Eloc = _local_energy(model, hamiltonian, samples, sample_weight)
 
         optimizer.zero_grad(set_to_none=True)
-        loss, _, _ = compute_grad(model, samples, sample_weight, Eloc)
+        with autocast:
+            loss, _, _ = compute_grad(model, samples, sample_weight, Eloc)
         loss.backward()
         torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
         optimizer.step()
