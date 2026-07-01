@@ -1,6 +1,7 @@
 import torch
 
 from hamiltonian.hamiltonian import Hamiltonian
+from hamiltonian.symmetries import Symmetry1D
 
 
 class TransverseFieldIsingY(Hamiltonian):
@@ -20,6 +21,7 @@ class TransverseFieldIsingY(Hamiltonian):
         coupling: float = 1.0,
         periodic: bool = False,
         device: torch.device = torch.device("cpu"),
+        symmetries: list[Symmetry1D] | None = None,
     ):
         super().__init__(
             n_params=1,
@@ -29,6 +31,7 @@ class TransverseFieldIsingY(Hamiltonian):
             device=device,
         )
         self.coupling = coupling
+        self.symmetries: list[Symmetry1D] = symmetries or []
 
     def observables(self) -> list[tuple[list[str], list[torch.Tensor], torch.Tensor]]:
         L = int(self.system_dim[0].item())

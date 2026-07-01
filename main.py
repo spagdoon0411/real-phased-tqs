@@ -1,6 +1,9 @@
+import math
+
 import torch
 from tabulate import tabulate
 
+from hamiltonian.symmetries import Reflection, SpinFlip, Translation
 from hamiltonian.transverse_field_ising import TransverseFieldIsing
 from hamiltonian.transverse_field_ising_y import TransverseFieldIsingY
 from model.tqs import TransformerQuantumState
@@ -8,10 +11,10 @@ from training.training_loop import train
 
 # Physical parameters
 hamiltonian_id = "x"
-L = 8
+L = 14
 h = 0.25
 J = 1.0
-periodic = False
+periodic = True
 
 # Training parameters
 device = torch.device("cpu")
@@ -20,7 +23,13 @@ n_steps = 2000
 num_walkers = 2048
 microbatch_size = 2048  # Ignored for the tree sampler
 sample_buffer_size = 2048
-warmup_steps = 4000
+warmup_steps = 500
+
+# Symmetry regularization parameters
+sym_beta_max = 0.05
+sym_tau_frac = 0.1 * n_steps
+sym_batch_size = 512
+sym_phase_weight = 1.0
 
 # Model parameters
 d_model = 32
@@ -54,6 +63,10 @@ def _print_summary(device: torch.device) -> None:
         ["Walkers", num_walkers],
         ["Microbatch size", microbatch_size],
         ["Sample buffer size", sample_buffer_size],
+        ["Sym beta_max", sym_beta_max],
+        ["Sym tau", f"{sym_tau_frac} * T"],
+        ["Sym batch size", sym_batch_size],
+        ["Sym phase weight", sym_phase_weight],
         ["d_model", d_model],
         ["Feedforward dim", dim_feedforward],
         ["Layers", n_layers],
@@ -68,12 +81,14 @@ def main() -> None:
     _print_summary(device)
 
     ham_cls = TransverseFieldIsing if hamiltonian_id == "x" else TransverseFieldIsingY
+    sym = [SpinFlip(), Reflection(), Translation()] if hamiltonian_id == "x" else []
     hamiltonian = ham_cls(
         system_dim=torch.tensor([float(L)]),
         phys_params=torch.tensor([h]),
         coupling=J,
         periodic=periodic,
         device=device,
+        symmetries=sym,
     )
 
     model = TransformerQuantumState(
@@ -86,9 +101,7 @@ def main() -> None:
         device=device,
     )
 
-    optimizer = torch.optim.Adam(
-        model.parameters(), lr=1.0, betas=(0.9, 0.98), eps=1e-9
-    )
+    optimizer = torch.optim.Adam(model.parameters(), lr=1.0, betas=(0.9, 0.98), eps=1e-9)
 
     def noam_lambda(step: int) -> float:
         step = max(step, 1)
@@ -96,15 +109,27 @@ def main() -> None:
 
     scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda=noam_lambda)
 
+    tau = sym_tau_frac * n_steps
+
+    def beta_lambda(step: int) -> float:
+        return sym_beta_max * (1.0 - math.exp(-step / tau))
+
     def log(step: int, diagnostics: dict) -> None:
         lr = optimizer.param_groups[0]["lr"]
+        sym_loss = diagnostics.get("sym_loss")
+        sym_str = (
+            f"  β {diagnostics['beta']:.4f}  sym_loss {sym_loss:.6f}  total_loss {diagnostics['loss']:+.6f}"
+            if sym_loss is not None
+            else ""
+        )
         print(
             f"step {step:4d}  "
             f"energy {diagnostics['energy']:+.6f}  "
             f"energy/site {diagnostics['energy_per_site']:+.6f}  "
             f"variance {diagnostics['variance']:.6f}  "
-            f"loss {diagnostics['loss']:+.6f}  "
             f"lr {lr:.2e}  "
+            f"energy_loss {diagnostics['energy_loss']:+.6f}"
+            f"{sym_str}  "
             f"dedup {1 - diagnostics['n_unique'] / num_walkers:.1%}  "
             f"it {diagnostics['iter_time']:.3f}s"
         )
@@ -135,6 +160,9 @@ def main() -> None:
         sampler=sampler,
         on_step=log,
         scheduler=scheduler,
+        beta_schedule=beta_lambda,
+        sym_batch_size=sym_batch_size,
+        sym_phase_weight=sym_phase_weight,
     )
 
 
