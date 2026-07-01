@@ -46,6 +46,10 @@ def train(
     for step in range(n_steps):
         t0 = time.perf_counter()
 
+        hamiltonian.cycle_system_dim()
+        hamiltonian.cycle_params()
+        model.set_prefix(hamiltonian.phys_params, hamiltonian.system_dim)
+
         # Draw samples from quantum state via chosen sampling routine
         samples, sample_weight = sampler()
 
@@ -98,6 +102,8 @@ def train(
                 "variance": variance.item(),
                 "n_unique": samples.shape[1],
                 "iter_time": tf - t0,
+                "system_dim": int(hamiltonian.system_dim[0].item()),
+                "phys_params": hamiltonian.phys_params.tolist(),
             }
             if sym_loss_val is not None:
                 diagnostics["sym_loss"] = sym_loss_val.detach().item()

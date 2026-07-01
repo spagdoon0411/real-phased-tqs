@@ -1,5 +1,6 @@
 import math
 
+import numpy as np
 import torch
 from tabulate import tabulate
 
@@ -11,8 +12,8 @@ from training.training_loop import train
 
 # Physical parameters
 hamiltonian_id = "x"
-L = 14
-h = 0.25
+L_min, L_max = (10, 30)
+h_min, h_max = (0.5, 1.5)
 J = 1.0
 periodic = True
 
@@ -53,9 +54,9 @@ def _print_summary(device: torch.device) -> None:
 
     rows = [
         ["Hamiltonian", "TFI-X" if hamiltonian_id == "x" else "TFI-Y"],
-        ["Chain length (L)", L],
-        ["Field strength (h)", h],
-        ["Coupling (J)", J],
+        ["L range", f"[{L_min}, {L_max}]"],
+        ["h range", f"[{h_min}, {h_max}]"],
+        ["J (static)", J],
         ["Periodic", periodic],
         ["Sampler", sampler_id],
         ["Steps", n_steps],
@@ -83,9 +84,9 @@ def main() -> None:
     ham_cls = TransverseFieldIsing if hamiltonian_id == "x" else TransverseFieldIsingY
     sym = [SpinFlip(), Reflection(), Translation()] if hamiltonian_id == "x" else []
     hamiltonian = ham_cls(
-        system_dim=torch.tensor([float(L)]),
-        phys_params=torch.tensor([h]),
-        coupling=J,
+        system_dim_range=np.array([L_min, L_max]),
+        static_params=np.array([J]),
+        ranged_params=np.array([[h_min, h_max]]),
         periodic=periodic,
         device=device,
         symmetries=sym,
@@ -96,7 +97,7 @@ def main() -> None:
         n_layers=n_layers,
         n_heads=n_heads,
         dim_feedforward=dim_feedforward,
-        max_len=L,
+        max_len=L_max,
         hamiltonian=hamiltonian,
         device=device,
     )
@@ -117,22 +118,29 @@ def main() -> None:
     def log(step: int, diagnostics: dict) -> None:
         lr = optimizer.param_groups[0]["lr"]
         sym_loss = diagnostics.get("sym_loss")
-        sym_str = (
-            f"  β {diagnostics['beta']:.4f}  sym_loss {sym_loss:.6f}  total_loss {diagnostics['loss']:+.6f}"
-            if sym_loss is not None
-            else ""
+        dedup = 1 - diagnostics["n_unique"] / num_walkers
+
+        line1 = f"step {step:4d}  {hamiltonian.param_str()}"
+        line2 = (
+            f"  energy {diagnostics['energy']:+.6f}"
+            f"  /site {diagnostics['energy_per_site']:+.6f}"
+            f"  variance {diagnostics['variance']:.6f}"
         )
-        print(
-            f"step {step:4d}  "
-            f"energy {diagnostics['energy']:+.6f}  "
-            f"energy/site {diagnostics['energy_per_site']:+.6f}  "
-            f"variance {diagnostics['variance']:.6f}  "
-            f"lr {lr:.2e}  "
-            f"energy_loss {diagnostics['energy_loss']:+.6f}"
-            f"{sym_str}  "
-            f"dedup {1 - diagnostics['n_unique'] / num_walkers:.1%}  "
-            f"it {diagnostics['iter_time']:.3f}s"
-        )
+        if sym_loss is not None:
+            line3 = f"  lr {lr:.2e}  e_loss {diagnostics['energy_loss']:+.6f}"
+            line4 = (
+                f"  β {diagnostics['beta']:.4f}"
+                f"  sym_loss {sym_loss:.6f}"
+                f"  total {diagnostics['loss']:+.6f}"
+                f"  dedup {dedup:.1%}  it {diagnostics['iter_time']:.3f}s"
+            )
+            print(line1, line2, line3, line4, sep="\n")
+        else:
+            line3 = (
+                f"  lr {lr:.2e}  e_loss {diagnostics['energy_loss']:+.6f}"
+                f"  dedup {dedup:.1%}  it {diagnostics['iter_time']:.3f}s"
+            )
+            print(line1, line2, line3, sep="\n")
 
     match sampler_id:
         case "iid":

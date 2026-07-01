@@ -1,3 +1,4 @@
+import numpy as np
 import torch
 
 from hamiltonian.hamiltonian import Hamiltonian
@@ -6,36 +7,42 @@ from hamiltonian.symmetries import Symmetry1D
 
 class TransverseFieldIsingY(Hamiltonian):
     """
-    Transverse-field Ising Hamiltonian on a 1D open chain with a Y-direction field:
+    Transverse-field Ising Hamiltonian on a 1D chain with a Y-direction field:
 
         H = -J sum_i Z_i Z_{i+1} - h sum_i Y_i
 
-    system_dim: (L,) chain length.
-    phys_params: (h,) transverse-field strength.
+    Parameter layout (ranged first, then static):
+        phys_params[0]  h  transverse field strength  ranged_params[0]
+        phys_params[1]  J  ZZ coupling                static_params[0]
     """
 
     def __init__(
         self,
-        system_dim: torch.Tensor,
-        phys_params: torch.Tensor,
-        coupling: float = 1.0,
+        system_dim_range: np.ndarray,
+        static_params: np.ndarray,
+        ranged_params: np.ndarray,
         periodic: bool = False,
         device: torch.device = torch.device("cpu"),
         symmetries: list[Symmetry1D] | None = None,
     ):
         super().__init__(
-            n_params=1,
-            system_dim=system_dim,
-            phys_params=phys_params,
+            system_dim_range=system_dim_range,
+            static_params=static_params,
+            ranged_params=ranged_params,
             periodic=periodic,
             device=device,
         )
-        self.coupling = coupling
         self.symmetries: list[Symmetry1D] = symmetries or []
+
+    def param_str(self) -> str:
+        L = int(self.system_dim[0].item())
+        h, J = self.phys_params[0].item(), self.phys_params[1].item()
+        return f"n={L}  h={h:.4f}  J={J:.4f}"
 
     def observables(self) -> list[tuple[list[str], list[torch.Tensor], torch.Tensor]]:
         L = int(self.system_dim[0].item())
         h = self.phys_params[0]
+        J = self.phys_params[1]
 
         left = torch.arange(L - 1, device=self.device)
         right = torch.arange(1, L, device=self.device)
@@ -45,7 +52,7 @@ class TransverseFieldIsingY(Hamiltonian):
         bond_idx = torch.stack([left, right], dim=1)
         site_idx = torch.arange(L, device=self.device).unsqueeze(1)
 
-        zz_coefs = -self.coupling * torch.ones(bond_idx.shape[0], device=self.device)
+        zz_coefs = -J * torch.ones(bond_idx.shape[0], device=self.device)
         y_coefs = -h * torch.ones(L, device=self.device)
 
         return [
