@@ -76,11 +76,16 @@ def _symmetry_loss(
     """
     Computes the generator-penalty symmetry loss:
 
-        L_sym = (1/|S|) sum_{s in S} w_s * E_b[(ΔA_s)^2 + w_phi * (1 - cos Δφ_s)]
+        L_sym = (1/|S|) sum_{s in S} w_s * E_b[(ΔA_s/L)^2 + w_phi * (1 - cos(Δφ_s/L))]
 
     where:
         ΔA_s(b)   = log|ψ(sb)| - log|ψ(b)|        (log-amplitude residual)
         Δφ_s(b)   = arg ψ(sb) - arg ψ(b) - angle_s (phase residual, wrapped via cosine)
+
+    Both residuals are extensive (summed over the L sites of the chain via `_psi_along_samples`),
+    so they are divided by L to make the loss intensive, i.e. comparable in scale to
+    `energy_loss` (which `compute_grad` normalizes by the extensive `E_model`) across the
+    randomized system sizes drawn by `hamiltonian.cycle_system_dim()`.
 
     E_b[...] is taken over `samples` weighted by `sample_weight`, matching the weighting used
     elsewhere in the training loop (the samplers return deduplicated configurations with
@@ -89,6 +94,7 @@ def _symmetry_loss(
     samples : (L, batch)  integer spin chains drawn for this loss term.
     sample_weight : (batch,)  normalized weight of each configuration.
     """
+    L = samples.shape[0]
     log_p, phases, _ = _psi_along_samples(model, samples)
 
     total = torch.zeros(1, device=model.device)
@@ -97,8 +103,8 @@ def _symmetry_loss(
         samples_g = sym.apply(samples)
         log_p_g, phases_g, _ = _psi_along_samples(model, samples_g)
 
-        d_amp = 0.5 * (log_p_g - log_p)
-        d_phase = phases_g - phases - sym.angle
+        d_amp = 0.5 * (log_p_g - log_p) / L
+        d_phase = (phases_g - phases - sym.angle) / L
 
         amp_loss = (d_amp ** 2 * sample_weight).sum()
         phase_loss = ((1.0 - torch.cos(d_phase)) * sample_weight).sum()
