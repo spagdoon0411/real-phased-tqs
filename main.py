@@ -8,17 +8,16 @@ import torch
 import wandb
 from tabulate import tabulate
 
+from hamiltonian.ising_three_spin import IsingThreeSpin
 from hamiltonian.symmetries import Reflection, SpinFlip, Translation
-from hamiltonian.transverse_field_ising import TransverseFieldIsing
-from hamiltonian.transverse_field_ising_y import TransverseFieldIsingY
 from model.tqs import TransformerQuantumState
 from training.training_loop import train
 
 # Physical parameters
-hamiltonian_id = "x"
 L_min, L_max = (10, 30)
-h_min, h_max = (0.5, 1.5)
-J = 1.0
+h_min, h_max = (-0.5, 2.5)
+J2 = 1.0
+J3 = 1.0
 periodic = True
 
 # Training parameters
@@ -56,10 +55,11 @@ def _select_device() -> torch.device:
 
 def _build_run_config(device_str: str) -> dict:
     return {
-        "hamiltonian": "TFI-X" if hamiltonian_id == "x" else "TFI-Y",
+        "hamiltonian": "IsingThreeSpin",
         "L_range": [L_min, L_max],
         "h_range": [h_min, h_max],
-        "J": J,
+        "J2": J2,
+        "J3": J3,
         "periodic": periodic,
         "sampler": sampler_id,
         "n_steps": n_steps,
@@ -84,7 +84,8 @@ def _print_summary(config: dict) -> None:
         ["Hamiltonian", config["hamiltonian"]],
         ["L range", config["L_range"]],
         ["h range", config["h_range"]],
-        ["J (static)", config["J"]],
+        ["J2 (static)", config["J2"]],
+        ["J3 (static)", config["J3"]],
         ["Periodic", config["periodic"]],
         ["Sampler", config["sampler"]],
         ["Steps", config["n_steps"]],
@@ -122,11 +123,10 @@ def main() -> None:
     with open(ckpt_dir / "run_summary.json", "w") as f:
         json.dump(config, f, indent=2)
 
-    ham_cls = TransverseFieldIsing if hamiltonian_id == "x" else TransverseFieldIsingY
-    sym = [SpinFlip(), Reflection(), Translation()] if hamiltonian_id == "x" else []
-    hamiltonian = ham_cls(
+    sym = [SpinFlip(), Reflection(), Translation()]
+    hamiltonian = IsingThreeSpin(
         system_dim_range=np.array([L_min, L_max]),
-        static_params=np.array([J]),
+        static_params=np.array([J2, J3]),
         ranged_params=np.array([[h_min, h_max]]),
         periodic=periodic,
         device=device,
