@@ -12,6 +12,7 @@ dependencies = [
     "torch",
     "torchinfo>=1.8.0",
     "torchsummary>=1.5.1",
+    "wandb>=0.28.0",
 ]
 
 [[tool.uv.index]]
