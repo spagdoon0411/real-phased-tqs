@@ -6,76 +6,8 @@ import torch
 
 from hamiltonian.hamiltonian import Hamiltonian
 from hamiltonian.symmetries import Symmetry1D
-from model.pauli_observables import _psi_along_samples, compute_grad, compute_observable
+from model.loss_utils import _draw_sym_samples, _local_energy, _symmetry_loss, compute_grad
 from model.tqs import TransformerQuantumState
-
-
-def _draw_sym_samples(samples: torch.Tensor, sym_batch_size: int | None) -> torch.Tensor:
-    """
-    Draws a random subset of columns (configurations) from `samples` (L, batch) for
-    use in the symmetry loss. If `sym_batch_size` is None or >= batch, returns all samples.
-    """
-    batch = samples.shape[1]
-    if sym_batch_size is None or sym_batch_size >= batch:
-        return samples
-    idx = torch.randperm(batch, device=samples.device)[:sym_batch_size]
-    return samples[:, idx]
-
-
-def _symmetry_loss(
-    model: TransformerQuantumState,
-    samples: torch.Tensor,
-    symmetries: list[Symmetry1D],
-    phase_weight: float = 1.0,
-) -> torch.Tensor:
-    """
-    Computes the generator-penalty symmetry loss:
-
-        L_sym = (1/|S|) sum_{s in S} w_s * E_b[(ΔA_s)^2 + w_phi * (1 - cos Δφ_s)]
-
-    where:
-        ΔA_s(b)   = log|ψ(sb)| - log|ψ(b)|        (log-amplitude residual)
-        Δφ_s(b)   = arg ψ(sb) - arg ψ(b) - angle_s (phase residual, wrapped via cosine)
-
-    samples : (L, batch)  integer spin chains drawn for this loss term.
-    """
-    log_p, phases, _ = _psi_along_samples(model, samples)
-
-    total = torch.zeros(1, device=model.device)
-    weight_sum = 0.0
-    for sym in symmetries:
-        samples_g = sym.apply(samples)
-        log_p_g, phases_g, _ = _psi_along_samples(model, samples_g)
-
-        d_amp = 0.5 * (log_p_g - log_p)
-        d_phase = phases_g - phases - sym.angle
-
-        amp_loss = (d_amp ** 2).mean()
-        phase_loss = (1.0 - torch.cos(d_phase)).mean()
-
-        total = total + sym.weight * (amp_loss + phase_weight * phase_loss)
-        weight_sum += sym.weight
-
-    return total / weight_sum
-
-
-def _local_energy(
-    model: TransformerQuantumState,
-    hamiltonian: Hamiltonian,
-    samples: torch.Tensor,
-    sample_weight: torch.Tensor,
-) -> torch.Tensor:
-    """
-    Evaluates E_loc(x) = sum over every operator in every observable tuple, returning a
-    complex tensor of shape `(batch,)`.
-    """
-    batch = samples.shape[1]
-    Eloc = torch.zeros(batch, dtype=torch.complex64, device=model.device)
-    for obs in hamiltonian.observables():
-        per_string = compute_observable(model, samples, sample_weight, obs, batch_mean=False)
-        for value in per_string:
-            Eloc = Eloc + value.sum(dim=0)
-    return Eloc
 
 
 def train(
@@ -114,32 +46,47 @@ def train(
     for step in range(n_steps):
         t0 = time.perf_counter()
 
+        # Draw samples from quantum state via chosen sampling routine
         samples, sample_weight = sampler()
 
+        # Define target datatypes
         autocast = torch.autocast(device_type=model.device.type, dtype=torch.bfloat16)
 
+        # AUTOGRAD: Compute local energy samples, detached from computation graph in line with a
+        # REINFORCE-style surrogate loss paradigm
         with torch.no_grad(), autocast:
             Eloc = _local_energy(model, hamiltonian, samples, sample_weight)
 
+        # Clear .grad (adjoint) fields across reverse-mode graph
         optimizer.zero_grad(set_to_none=True)
-        sym_loss_val: torch.Tensor | None = None
+
         with autocast:
+            # Compute base VMC energy loss
             energy_loss, _, _ = compute_grad(model, samples, sample_weight, Eloc)
             loss = energy_loss
 
+            # Compute symmetrization penalties if symmetries must be enforced
             if symmetries and beta_schedule is not None:
+                # Compute contributions to the total loss from the symmetrization term
                 beta = beta_schedule(step)
                 sym_samples = _draw_sym_samples(samples, sym_batch_size)
                 sym_loss_val = beta * _symmetry_loss(model, sym_samples, symmetries, sym_phase_weight)
                 loss = energy_loss + sym_loss_val
+            else:
+                # No symmetries; neither compute nor report a symmetrization loss value
+                sym_loss_val = None
 
+        # AUTOGRAD: Populate adjoints upstream, limit grad norms, apply gradient updates to input
+        # parameters, and perform scheduler bookkeeping
         loss.backward()
         torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
         optimizer.step()
         if scheduler is not None:
             scheduler.step()
 
+        # Report diagnostics
         if on_step is not None:
+            tf = time.perf_counter()
             energy = (Eloc * sample_weight).sum().real
             variance = ((Eloc - energy) * (Eloc - energy).conj() * sample_weight).sum().real
             n_sites = int(hamiltonian.system_dim.prod().item())
@@ -150,7 +97,7 @@ def train(
                 "loss": loss.detach().item(),
                 "variance": variance.item(),
                 "n_unique": samples.shape[1],
-                "iter_time": time.perf_counter() - t0,
+                "iter_time": tf - t0,
             }
             if sym_loss_val is not None:
                 diagnostics["sym_loss"] = sym_loss_val.detach().item()

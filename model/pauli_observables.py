@@ -40,41 +40,6 @@ def _psi_along_samples(model, samples):
     return log_probs, phases, psi
 
 
-def compute_grad(model, samples, sample_weight, Eloc):
-    """
-    Parameters
-    ----------
-    model : The transformer model
-    samples : (n, batch)
-        batched sample from the transformer distribution
-    sample_weight: (batch, )
-        weight for each sample
-    Eloc : (batch, ), complex tensor
-        local energy estimator
-
-    Returns
-    -------
-    None.
-
-    Computes Gk = <<2Re[(Eloc-<<Eloc>>) Dk*]>>
-    where Dk = d log Psi / d pk, pk is the NN parameter
-
-    Note: since the transformer wavefunction is normalized, we should have
-    <<Dk>> = 0, and Gk has the simplified expression
-    Gk = <<2Re[Eloc Dk*]>>
-    TODO: Check this
-
-    """
-
-    log_probs, phases, _ = _psi_along_samples(model, samples)
-    E_model = (Eloc * sample_weight).sum().detach()  # (1, )
-    scale = torch.clamp(1 / E_model.abs(), max=5)
-    E = Eloc - E_model  # (batch, )
-
-    loss = ((E.real * log_probs + E.imag * phases) * sample_weight).sum() * scale
-    return loss, log_probs, phases
-
-
 @torch.no_grad()
 def compute_observable(model, samples, sample_weight, observable, batch_mean=True):
     """
