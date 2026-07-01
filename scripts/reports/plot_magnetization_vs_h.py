@@ -79,10 +79,16 @@ def _build_model(config: dict, device: torch.device) -> TransformerQuantumState:
     )
 
 
-def _list_checkpoints(ckpt_dir: Path, stride: int) -> list[Path]:
+def _list_checkpoints(ckpt_dir: Path, stride: int, epoch_min: int | None, epoch_max: int | None) -> list[Path]:
     ckpts = sorted(ckpt_dir.glob("[0-9][0-9][0-9][0-9][0-9][0-9].pt"))
     if not ckpts:
         raise SystemExit(f"No checkpoints (NNNNNN.pt) found in '{ckpt_dir}'.")
+    if epoch_min is not None:
+        ckpts = [p for p in ckpts if int(p.stem) >= epoch_min]
+    if epoch_max is not None:
+        ckpts = [p for p in ckpts if int(p.stem) <= epoch_max]
+    if not ckpts:
+        raise SystemExit(f"No checkpoints in '{ckpt_dir}' fall within epoch range [{epoch_min}, {epoch_max}].")
     return ckpts[::stride]
 
 
@@ -169,6 +175,12 @@ def main() -> None:
         "--stride", type=int, default=1, help="Only plot every Nth checkpoint, oldest-first (default: 1, i.e. all)."
     )
     parser.add_argument(
+        "--epoch-min", type=int, default=None, help="Only include checkpoints with step >= this value (default: no lower bound)."
+    )
+    parser.add_argument(
+        "--epoch-max", type=int, default=None, help="Only include checkpoints with step <= this value (default: no upper bound)."
+    )
+    parser.add_argument(
         "--out",
         type=Path,
         default=Path(__file__).parent / "figures" / "magnetization_vs_h.png",
@@ -199,7 +211,7 @@ def main() -> None:
         )
     h_values = np.linspace(args.h_min, args.h_max, args.n_h)
 
-    ckpts = _list_checkpoints(args.ckpt_dir, args.stride)
+    ckpts = _list_checkpoints(args.ckpt_dir, args.stride, args.epoch_min, args.epoch_max)
     steps = [int(p.stem) for p in ckpts]
 
     means_all = np.zeros((len(ckpts), args.n_h))
