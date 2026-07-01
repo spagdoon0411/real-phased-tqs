@@ -1,6 +1,8 @@
 # PROJECT-SPECIFIC
 model/notes/
 data/
+mount/
+scripts/reports/figures/
 
 # STANDARD PYTHON
 
