@@ -73,8 +73,8 @@ def train(
             if symmetries and beta_schedule is not None:
                 # Compute contributions to the total loss from the symmetrization term
                 beta = beta_schedule(step)
-                sym_samples = _draw_sym_samples(samples, sym_batch_size)
-                sym_loss_val = beta * _symmetry_loss(model, sym_samples, symmetries, sym_phase_weight)
+                sym_samples, sym_weight = _draw_sym_samples(samples, sample_weight, sym_batch_size)
+                sym_loss_val = beta * _symmetry_loss(model, sym_samples, sym_weight, symmetries, sym_phase_weight)
                 loss = energy_loss + sym_loss_val
             else:
                 # No symmetries; neither compute nor report a symmetrization loss value

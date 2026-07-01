@@ -31,7 +31,7 @@ warmup_steps = 500
 
 # Symmetry regularization parameters
 sym_beta_max = 0.05
-sym_tau_frac = 0.1 * n_steps
+sym_tau_frac = 0.1
 sym_batch_size = 512
 sym_phase_weight = 1.0
 

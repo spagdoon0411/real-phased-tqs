@@ -46,21 +46,30 @@ def _local_energy(
     return Eloc
 
 
-def _draw_sym_samples(samples: torch.Tensor, sym_batch_size: int | None) -> torch.Tensor:
+def _draw_sym_samples(
+    samples: torch.Tensor,
+    sample_weight: torch.Tensor,
+    sym_batch_size: int | None,
+) -> tuple[torch.Tensor, torch.Tensor]:
     """
-    Draws a random subset of columns (configurations) from `samples` (L, batch) for
-    use in the symmetry loss. If `sym_batch_size` is None or >= batch, returns all samples.
+    Draws a random subset of columns (configurations) from `samples` (L, batch), along with
+    the corresponding entries of `sample_weight`, for use in the symmetry loss. The subset's
+    weights are renormalized to sum to 1 so they remain a valid probability distribution over
+    the reduced batch. If `sym_batch_size` is None or >= batch, returns the inputs unchanged.
     """
     batch = samples.shape[1]
     if sym_batch_size is None or sym_batch_size >= batch:
-        return samples
+        return samples, sample_weight
     idx = torch.randperm(batch, device=samples.device)[:sym_batch_size]
-    return samples[:, idx]
+    sub_weight = sample_weight[idx]
+    sub_weight = sub_weight / sub_weight.sum()
+    return samples[:, idx], sub_weight
 
 
 def _symmetry_loss(
     model: TransformerQuantumState,
     samples: torch.Tensor,
+    sample_weight: torch.Tensor,
     symmetries: list[Symmetry1D],
     phase_weight: float = 1.0,
 ) -> torch.Tensor:
@@ -73,7 +82,12 @@ def _symmetry_loss(
         ΔA_s(b)   = log|ψ(sb)| - log|ψ(b)|        (log-amplitude residual)
         Δφ_s(b)   = arg ψ(sb) - arg ψ(b) - angle_s (phase residual, wrapped via cosine)
 
+    E_b[...] is taken over `samples` weighted by `sample_weight`, matching the weighting used
+    elsewhere in the training loop (the samplers return deduplicated configurations with
+    non-uniform multiplicity weights, so a plain average would misweight the residual).
+
     samples : (L, batch)  integer spin chains drawn for this loss term.
+    sample_weight : (batch,)  normalized weight of each configuration.
     """
     log_p, phases, _ = _psi_along_samples(model, samples)
 
@@ -86,8 +100,8 @@ def _symmetry_loss(
         d_amp = 0.5 * (log_p_g - log_p)
         d_phase = phases_g - phases - sym.angle
 
-        amp_loss = (d_amp ** 2).mean()
-        phase_loss = (1.0 - torch.cos(d_phase)).mean()
+        amp_loss = (d_amp ** 2 * sample_weight).sum()
+        phase_loss = ((1.0 - torch.cos(d_phase)) * sample_weight).sum()
 
         total = total + sym.weight * (amp_loss + phase_weight * phase_loss)
         weight_sum += sym.weight
