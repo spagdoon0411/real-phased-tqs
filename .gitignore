@@ -3,6 +3,7 @@ model/notes/
 data/
 mount/
 scripts/reports/figures/
+checkpoints/
 
 # STANDARD PYTHON
 
