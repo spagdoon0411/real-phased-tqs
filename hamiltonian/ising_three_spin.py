@@ -19,6 +19,10 @@ class IsingThreeSpin(Hamiltonian):
         phys_params[2]  J3   ZXZ (cluster) coupling          static_params[1]
     """
 
+    name = "IsingThreeSpin"
+    ranged_param_names = ("h",)
+    static_param_names = ("J2", "J3")
+
     def __init__(
         self,
         system_dim_range: np.ndarray,
@@ -36,11 +40,6 @@ class IsingThreeSpin(Hamiltonian):
             device=device,
         )
         self.symmetries: list[Symmetry1D] = symmetries or []
-
-    def param_str(self) -> str:
-        L = int(self.system_dim[0].item())
-        h, J2, J3 = self.phys_params[0].item(), self.phys_params[1].item(), self.phys_params[2].item()
-        return f"n={L}  h={h:.4f}  J2={J2:.4f}  J3={J3:.4f}"
 
     def observables(self) -> list[tuple[list[str], list[torch.Tensor], torch.Tensor]]:
         L = int(self.system_dim[0].item())

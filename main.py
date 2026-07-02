@@ -41,7 +41,7 @@ dim_feedforward = 4 * d_model
 
 # Logging / checkpointing
 wandb_project = "real-phased-tqs"
-checkpoint_every = 200
+checkpoint_every = 10
 
 
 def _select_device() -> torch.device:
@@ -50,6 +50,76 @@ def _select_device() -> torch.device:
     if torch.backends.mps.is_available():
         return torch.device("mps")
     return torch.device("cpu")
+
+
+def _device_str(device: torch.device) -> str:
+    if device.type == "cuda":
+        return f"cuda ({torch.cuda.get_device_name(device)})"
+    return str(device)
+
+
+def _shared_config(device_str: str) -> dict:
+    """Training/model config shared across every experiment entry point below."""
+    return {
+        "sampler": sampler_id,
+        "n_steps": n_steps,
+        "warmup_steps": warmup_steps,
+        "num_walkers": num_walkers,
+        "microbatch_size": microbatch_size,
+        "sample_buffer_size": sample_buffer_size,
+        "sym_beta_max": sym_beta_max,
+        "sym_tau_frac": sym_tau_frac,
+        "sym_batch_size": sym_batch_size,
+        "sym_phase_weight": sym_phase_weight,
+        "d_model": d_model,
+        "dim_feedforward": dim_feedforward,
+        "n_layers": n_layers,
+        "n_heads": n_heads,
+        "device": device_str,
+    }
+
+
+def _shared_summary_rows(device_str: str) -> list[list]:
+    return [
+        ["Sampler", sampler_id],
+        ["Steps", n_steps],
+        ["Warmup steps", warmup_steps],
+        ["Walkers", num_walkers],
+        ["Microbatch size", microbatch_size],
+        ["Sample buffer size", sample_buffer_size],
+        ["Sym beta_max", sym_beta_max],
+        ["Sym tau_frac", sym_tau_frac],
+        ["Sym batch size", sym_batch_size],
+        ["Sym phase weight", sym_phase_weight],
+        ["d_model", d_model],
+        ["Feedforward dim", dim_feedforward],
+        ["Layers", n_layers],
+        ["Heads", n_heads],
+        ["Device", device_str],
+    ]
+
+
+def _prepare_run(hamiltonian: Hamiltonian, device: torch.device) -> Path:
+    """
+    Builds the full run config (Hamiltonian-specific fragment + shared training/model
+    config), prints the summary table, starts the wandb run, and creates the timestamped
+    checkpoint directory with its `run_summary.json`. Shared by every experiment entry
+    point below.
+    """
+    device_str = _device_str(device)
+    config = {**hamiltonian.config_fragment(), **_shared_config(device_str)}
+    rows = hamiltonian.summary_rows() + _shared_summary_rows(device_str)
+    print(tabulate(rows, headers=["Parameter", "Value"], tablefmt="rounded_outline"))
+
+    wandb.init(project=wandb_project, config=config)
+
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    ckpt_dir = Path("checkpoints") / f"{timestamp}_{wandb.run.name}"
+    ckpt_dir.mkdir(parents=True, exist_ok=True)
+    with open(ckpt_dir / "run_summary.json", "w") as f:
+        json.dump(config, f, indent=2)
+
+    return ckpt_dir
 
 
 def _run_training(hamiltonian: Hamiltonian, device: torch.device, ckpt_dir: Path) -> None:
@@ -179,82 +249,18 @@ def run_ising_three_spin() -> None:
     J2 = 1.0
     J3 = 1.0
 
-    def build_run_config(device_str: str) -> dict:
-        return {
-            "hamiltonian": "IsingThreeSpin",
-            "L_range": [L_min, L_max],
-            "h_range": [h_min, h_max],
-            "J2": J2,
-            "J3": J3,
-            "periodic": periodic,
-            "sampler": sampler_id,
-            "n_steps": n_steps,
-            "warmup_steps": warmup_steps,
-            "num_walkers": num_walkers,
-            "microbatch_size": microbatch_size,
-            "sample_buffer_size": sample_buffer_size,
-            "sym_beta_max": sym_beta_max,
-            "sym_tau_frac": sym_tau_frac,
-            "sym_batch_size": sym_batch_size,
-            "sym_phase_weight": sym_phase_weight,
-            "d_model": d_model,
-            "dim_feedforward": dim_feedforward,
-            "n_layers": n_layers,
-            "n_heads": n_heads,
-            "device": device_str,
-        }
-
-    def print_summary(config: dict) -> None:
-        rows = [
-            ["Hamiltonian", config["hamiltonian"]],
-            ["L range", config["L_range"]],
-            ["h range", config["h_range"]],
-            ["J2 (static)", config["J2"]],
-            ["J3 (static)", config["J3"]],
-            ["Periodic", config["periodic"]],
-            ["Sampler", config["sampler"]],
-            ["Steps", config["n_steps"]],
-            ["Warmup steps", config["warmup_steps"]],
-            ["Walkers", config["num_walkers"]],
-            ["Microbatch size", config["microbatch_size"]],
-            ["Sample buffer size", config["sample_buffer_size"]],
-            ["Sym beta_max", config["sym_beta_max"]],
-            ["Sym tau_frac", config["sym_tau_frac"]],
-            ["Sym batch size", config["sym_batch_size"]],
-            ["Sym phase weight", config["sym_phase_weight"]],
-            ["d_model", config["d_model"]],
-            ["Feedforward dim", config["dim_feedforward"]],
-            ["Layers", config["n_layers"]],
-            ["Heads", config["n_heads"]],
-            ["Device", config["device"]],
-        ]
-        print(tabulate(rows, headers=["Parameter", "Value"], tablefmt="rounded_outline"))
-
     device = _select_device()
-    device_str = str(device)
-    if device.type == "cuda":
-        device_str = f"cuda ({torch.cuda.get_device_name(device)})"
-
-    config = build_run_config(device_str)
-    print_summary(config)
-
-    wandb.init(project=wandb_project, config=config)
-
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    ckpt_dir = Path("checkpoints") / timestamp
-    ckpt_dir.mkdir(parents=True, exist_ok=True)
-    with open(ckpt_dir / "run_summary.json", "w") as f:
-        json.dump(config, f, indent=2)
-
     sym = [SpinFlip(), Reflection(), Translation()]
     hamiltonian = IsingThreeSpin(
-        system_dim_range=np.array([L_min, L_max]),
+        system_dim_range=np.array([[L_min, L_max]]),
         static_params=np.array([J2, J3]),
         ranged_params=np.array([[h_min, h_max]]),
         periodic=periodic,
         device=device,
         symmetries=sym,
     )
+
+    ckpt_dir = _prepare_run(hamiltonian, device)
 
     _run_training(hamiltonian, device, ckpt_dir)
 
@@ -266,80 +272,18 @@ def run_transverse_field_ising() -> None:
     h_min, h_max = (0.5, 1.5)
     J = 1.0
 
-    def build_run_config(device_str: str) -> dict:
-        return {
-            "hamiltonian": "TFI-X",
-            "L_range": [L_min, L_max],
-            "h_range": [h_min, h_max],
-            "J": J,
-            "periodic": periodic,
-            "sampler": sampler_id,
-            "n_steps": n_steps,
-            "warmup_steps": warmup_steps,
-            "num_walkers": num_walkers,
-            "microbatch_size": microbatch_size,
-            "sample_buffer_size": sample_buffer_size,
-            "sym_beta_max": sym_beta_max,
-            "sym_tau_frac": sym_tau_frac,
-            "sym_batch_size": sym_batch_size,
-            "sym_phase_weight": sym_phase_weight,
-            "d_model": d_model,
-            "dim_feedforward": dim_feedforward,
-            "n_layers": n_layers,
-            "n_heads": n_heads,
-            "device": device_str,
-        }
-
-    def print_summary(config: dict) -> None:
-        rows = [
-            ["Hamiltonian", config["hamiltonian"]],
-            ["L range", config["L_range"]],
-            ["h range", config["h_range"]],
-            ["J (static)", config["J"]],
-            ["Periodic", config["periodic"]],
-            ["Sampler", config["sampler"]],
-            ["Steps", config["n_steps"]],
-            ["Warmup steps", config["warmup_steps"]],
-            ["Walkers", config["num_walkers"]],
-            ["Microbatch size", config["microbatch_size"]],
-            ["Sample buffer size", config["sample_buffer_size"]],
-            ["Sym beta_max", config["sym_beta_max"]],
-            ["Sym tau_frac", config["sym_tau_frac"]],
-            ["Sym batch size", config["sym_batch_size"]],
-            ["Sym phase weight", config["sym_phase_weight"]],
-            ["d_model", config["d_model"]],
-            ["Feedforward dim", config["dim_feedforward"]],
-            ["Layers", config["n_layers"]],
-            ["Heads", config["n_heads"]],
-            ["Device", config["device"]],
-        ]
-        print(tabulate(rows, headers=["Parameter", "Value"], tablefmt="rounded_outline"))
-
     device = _select_device()
-    device_str = str(device)
-    if device.type == "cuda":
-        device_str = f"cuda ({torch.cuda.get_device_name(device)})"
-
-    config = build_run_config(device_str)
-    print_summary(config)
-
-    wandb.init(project=wandb_project, config=config)
-
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    ckpt_dir = Path("checkpoints") / timestamp
-    ckpt_dir.mkdir(parents=True, exist_ok=True)
-    with open(ckpt_dir / "run_summary.json", "w") as f:
-        json.dump(config, f, indent=2)
-
     sym = [SpinFlip(), Reflection(), Translation()]
     hamiltonian = TransverseFieldIsing(
-        system_dim_range=np.array([L_min, L_max]),
+        system_dim_range=np.array([[L_min, L_max]]),
         static_params=np.array([J]),
         ranged_params=np.array([[h_min, h_max]]),
         periodic=periodic,
         device=device,
         symmetries=sym,
     )
+
+    ckpt_dir = _prepare_run(hamiltonian, device)
 
     _run_training(hamiltonian, device, ckpt_dir)
 

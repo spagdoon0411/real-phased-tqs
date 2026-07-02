@@ -18,12 +18,19 @@ class Hamiltonian:
     System size and physical parameters are both specified as ranges. The model prefix
     encodes the current sampled values:
 
-        [log(L) | ranged_param_values | static_params]
+        [log(system_dim) | ranged_param_values | static_params]
 
-    `cycle_system_dim` draws a new integer L uniformly from [L_min, L_max].
-    `cycle_params` draws new values uniformly from each parameter's [low, high] interval.
-    `static_params` are fixed at construction and never randomized by `cycle_params`.
+    System size is a vector of `n_dims` integers (one per lattice dimension).
+
+    Subclasses describe their own physical parameters and system-size axes declaratively via
+    the `name`, `ranged_param_names`, and `static_param_names` class attributes (and, for
+    multi-dimensional lattices, an overridden `system_dim_labels`) rather than overriding
+    `param_str`/reporting logic themselves.
     """
+
+    name: str = "Hamiltonian"
+    ranged_param_names: tuple[str, ...] = ()
+    static_param_names: tuple[str, ...] = ()
 
     def __init__(
         self,
@@ -34,14 +41,20 @@ class Hamiltonian:
         device: torch.device = torch.device("cpu"),
     ):
         """
-        system_dim_range : 1-D numpy array [L_min, L_max] (inclusive integers). Initialized
-                           to the midpoint; cycle_system_dim samples uniformly from this range
-                           and set_system_dim validates against it.
+        system_dim_range : 2-D numpy array of shape (n_dims, 2); each row is an inclusive
+                           [low, high] integer range for one lattice dimension (n_dims == 1
+                           for a 1D chain). Initialized to the per-dimension max.
+                           cycle_system_dim samples uniformly from these ranges and
+                           set_system_dim validates against them.
         static_params    : 1-D numpy array of fixed parameter values, shape (n_static,).
+                           `static_params` are fixed at construction and never randomized by
+                           `cycle_params`.
         ranged_params    : 2-D numpy array of shape (n_ranged, 2); each row is [low, high].
+                           `cycle_params` draws new values uniformly from each parameter's
+                           [low, high] interval.
         """
-        if system_dim_range.shape != (2,):
-            raise ValueError(f"system_dim_range must have shape (2,), got {system_dim_range.shape}")
+        if system_dim_range.ndim != 2 or system_dim_range.shape[1] != 2:
+            raise ValueError(f"system_dim_range must have shape (n_dims, 2), got {system_dim_range.shape}")
         if ranged_params.ndim != 2 or (ranged_params.shape[0] > 0 and ranged_params.shape[1] != 2):
             raise ValueError(f"ranged_params must have shape (n_ranged, 2), got {ranged_params.shape}")
         if static_params.ndim != 1:
@@ -49,8 +62,7 @@ class Hamiltonian:
 
         self.device = device
         self._system_dim_range: np.ndarray = system_dim_range
-        L_init = int((int(system_dim_range[0]) + int(system_dim_range[1])) // 2)
-        self.system_dim = torch.tensor([float(L_init)], device=device)
+        self.system_dim = torch.tensor(system_dim_range[:, 1].astype(np.float32), device=device)
         self.periodic = bool(periodic)
 
         self._static_params = torch.tensor(static_params, dtype=torch.float32, device=device)
@@ -114,27 +126,70 @@ class Hamiltonian:
             self._static_params = phys_params[n_ranged:].to(self.device)
 
     def cycle_system_dim(self) -> None:
-        """Sample a new system size uniformly at random from the integer range [L_min, L_max]."""
-        lo, hi = int(self._system_dim_range[0]), int(self._system_dim_range[1])
-        L = int(np.random.randint(lo, hi + 1))
-        self.system_dim = torch.tensor([float(L)], device=self.device)
+        """Sample a new system size uniformly at random from each dimension's declared range."""
+        los = self._system_dim_range[:, 0].astype(int)
+        his = self._system_dim_range[:, 1].astype(int)
+        dims = np.random.randint(los, his + 1)
+        self.system_dim = torch.tensor(dims.astype(np.float32), device=self.device)
 
     def set_system_dim(self, system_dim: torch.Tensor) -> None:
-        if system_dim.ndim > 1:
+        if system_dim.ndim != 1:
             raise ValueError(f"System dimensions must be 1-dimensional, got {system_dim.shape}")
-        if system_dim.shape[0] != 1:
-            raise NotImplementedError("Systems with more than one dimension are not yet supported")
-        L = int(system_dim[0].item())
-        lo, hi = int(self._system_dim_range[0]), int(self._system_dim_range[1])
-        if not (lo <= L <= hi):
-            raise ValueError(f"system_dim {L} is outside the declared range [{lo}, {hi}]")
+        n_dims = self._system_dim_range.shape[0]
+        if system_dim.shape[0] != n_dims:
+            raise ValueError(f"Expected {n_dims} system dimension(s), got {system_dim.shape[0]}")
+        dims = system_dim.detach().cpu().numpy()
+        los, his = self._system_dim_range[:, 0], self._system_dim_range[:, 1]
+        out_of_range = (dims < los) | (dims > his)
+        if out_of_range.any():
+            bad = np.where(out_of_range)[0]
+            raise ValueError(
+                f"System dimension(s) at index {bad.tolist()} out of declared range: "
+                f"values={dims[bad].tolist()}, ranges={self._system_dim_range[bad].tolist()}"
+            )
         self.system_dim = system_dim.to(self.device)
+
+    def system_dim_labels(self) -> list[str]:
+        """
+        Labels for each system-size axis, e.g. ["L"] for a 1D chain. A future 2D lattice
+        Hamiltonian would override this to return e.g. ["Lx", "Ly"].
+        """
+        n_dims = self._system_dim_range.shape[0]
+        if n_dims == 1:
+            return ["L"]
+        return [f"L{i}" for i in range(n_dims)]
 
     def param_str(self) -> str:
         """Human-readable summary of the current system size and parameter values."""
-        L = int(self.system_dim[0].item())
-        params = [f"{v:.4f}" for v in self.phys_params.tolist()]
-        return f"n={L}  params=[{', '.join(params)}]"
+        dims = "×".join(str(int(d)) for d in self.system_dim.tolist())
+        names = list(self.ranged_param_names) + list(self.static_param_names)
+        params = "  ".join(f"{name}={val:.4f}" for name, val in zip(names, self.phys_params.tolist()))
+        return f"n={dims}  {params}"
+
+    def _config_items(self) -> list[tuple[str, str, object]]:
+        """
+        `(dict_key, display_label, value)` triples describing this Hamiltonian's name,
+        system-size range(s), and physical parameter ranges — the single source of truth
+        for both `config_fragment` (wandb config / `run_summary.json`) and `summary_rows`
+        (the printed table).
+        """
+        items: list[tuple[str, str, object]] = [("hamiltonian", "Hamiltonian", self.name)]
+        for label, (lo, hi) in zip(self.system_dim_labels(), self._system_dim_range.tolist()):
+            items.append((f"{label}_range", f"{label} range", [int(lo), int(hi)]))
+        for name, (lo, hi) in zip(self.ranged_param_names, self._ranged_param_ranges.tolist()):
+            items.append((f"{name}_range", f"{name} range", [lo, hi]))
+        for name, val in zip(self.static_param_names, self._static_params.tolist()):
+            items.append((name, f"{name} (static)", val))
+        items.append(("periodic", "Periodic", self.periodic))
+        return items
+
+    def config_fragment(self) -> dict:
+        """This Hamiltonian's contribution to the run config dict."""
+        return {key: value for key, _, value in self._config_items()}
+
+    def summary_rows(self) -> list[list]:
+        """Same data as `config_fragment`, formatted as `[label, value]` rows for `tabulate`."""
+        return [[label, value] for _, label, value in self._config_items()]
 
     def observables(self) -> list[tuple[list[str], list[torch.Tensor], torch.Tensor]]:
         """
@@ -142,14 +197,16 @@ class Hamiltonian:
         `model.pauli_observables.compute_observable`. Each tuple is
         `(pauli_strs, coefs, spin_idx)` with `spin_idx` of shape `(n_op, n_site)`.
         """
-        raise NotImplementedError
+        raise NotImplementedError("Subclasses should implement this method")
 
     def sparse_matrix(self) -> sp.csr_array:
         """
         Materializes H on the full 2^L-dimensional computational basis by summing Kronecker
         products of Pauli matrices against the observable tuples returned by `observables()`.
-        Returns a scipy CSR array of shape (2^L, 2^L).
+        Returns a scipy CSR array of shape (2^L, 2^L). Only supports 1D chains.
         """
+        if self.system_dim.shape[0] != 1:
+            raise NotImplementedError("sparse_matrix only supports 1D chains")
         L = int(self.system_dim[0].item())
         N = 1 << L
 

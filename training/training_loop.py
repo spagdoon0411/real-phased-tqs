@@ -43,69 +43,73 @@ def train(
     """
     symmetries: list[Symmetry1D] = getattr(hamiltonian, "symmetries", [])
 
-    for step in range(n_steps):
-        t0 = time.perf_counter()
+    try:
+        for step in range(n_steps):
+            t0 = time.perf_counter()
 
-        hamiltonian.cycle_system_dim()
-        hamiltonian.cycle_params()
-        model.set_prefix(hamiltonian.phys_params, hamiltonian.system_dim)
+            hamiltonian.cycle_system_dim()
+            hamiltonian.cycle_params()
+            model.set_prefix(hamiltonian.phys_params, hamiltonian.system_dim)
 
-        # Draw samples from quantum state via chosen sampling routine
-        samples, sample_weight = sampler()
+            # Draw samples from quantum state via chosen sampling routine
+            samples, sample_weight = sampler()
 
-        # Define target datatypes
-        autocast = torch.autocast(device_type=model.device.type, dtype=torch.bfloat16)
+            # Define target datatypes
+            autocast = torch.autocast(device_type=model.device.type, dtype=torch.bfloat16)
 
-        # AUTOGRAD: Compute local energy samples, detached from computation graph in line with a
-        # REINFORCE-style surrogate loss paradigm
-        with torch.no_grad(), autocast:
-            Eloc = _local_energy(model, hamiltonian, samples, sample_weight)
+            # AUTOGRAD: Compute local energy samples, detached from computation graph in line with a
+            # REINFORCE-style surrogate loss paradigm
+            with torch.no_grad(), autocast:
+                Eloc = _local_energy(model, hamiltonian, samples, sample_weight)
 
-        # Clear .grad (adjoint) fields across reverse-mode graph
-        optimizer.zero_grad(set_to_none=True)
+            # Clear .grad (adjoint) fields across reverse-mode graph
+            optimizer.zero_grad(set_to_none=True)
 
-        with autocast:
-            # Compute base VMC energy loss
-            energy_loss, _, _ = compute_grad(model, samples, sample_weight, Eloc)
-            loss = energy_loss
+            with autocast:
+                # Compute base VMC energy loss
+                energy_loss, _, _ = compute_grad(model, samples, sample_weight, Eloc)
+                loss = energy_loss
 
-            # Compute symmetrization penalties if symmetries must be enforced
-            if symmetries and beta_schedule is not None:
-                # Compute contributions to the total loss from the symmetrization term
-                beta = beta_schedule(step)
-                sym_samples, sym_weight = _draw_sym_samples(samples, sample_weight, sym_batch_size)
-                sym_loss_val = beta * _symmetry_loss(model, sym_samples, sym_weight, symmetries, sym_phase_weight)
-                loss = energy_loss + sym_loss_val
-            else:
-                # No symmetries; neither compute nor report a symmetrization loss value
-                sym_loss_val = None
+                # Compute symmetrization penalties if symmetries must be enforced
+                if symmetries and beta_schedule is not None:
+                    # Compute contributions to the total loss from the symmetrization term
+                    beta = beta_schedule(step)
+                    sym_samples, sym_weight = _draw_sym_samples(samples, sample_weight, sym_batch_size)
+                    sym_loss_val = beta * _symmetry_loss(model, sym_samples, sym_weight, symmetries, sym_phase_weight)
+                    loss = energy_loss + sym_loss_val
+                else:
+                    # No symmetries; neither compute nor report a symmetrization loss value
+                    sym_loss_val = None
 
-        # AUTOGRAD: Populate adjoints upstream, limit grad norms, apply gradient updates to input
-        # parameters, and perform scheduler bookkeeping
-        loss.backward()
-        torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
-        optimizer.step()
-        if scheduler is not None:
-            scheduler.step()
+            # AUTOGRAD: Populate adjoints upstream, limit grad norms, apply gradient updates to input
+            # parameters, and perform scheduler bookkeeping
+            loss.backward()
+            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+            optimizer.step()
+            if scheduler is not None:
+                scheduler.step()
 
-        # Report diagnostics
-        if on_step is not None:
-            tf = time.perf_counter()
-            energy = (Eloc * sample_weight).sum().real
-            variance = ((Eloc - energy) * (Eloc - energy).conj() * sample_weight).sum().real
-            n_sites = int(hamiltonian.system_dim.prod().item())
-            diagnostics: dict = {
-                "energy": energy.item(),
-                "energy_per_site": energy.item() / n_sites,
-                "energy_loss": energy_loss.detach().item(),
-                "loss": loss.detach().item(),
-                "variance": variance.item(),
-                "n_unique": samples.shape[1],
-                "iter_time": tf - t0,
-                "system_dim": int(hamiltonian.system_dim[0].item()),
-                "phys_params": hamiltonian.phys_params.tolist(),
-            }
-            if sym_loss_val is not None:
-                diagnostics["sym_loss"] = sym_loss_val.detach().item()
-                diagnostics["beta"] = beta
-            on_step(step, diagnostics)
+            # Report diagnostics
+            if on_step is not None:
+                tf = time.perf_counter()
+                energy = (Eloc * sample_weight).sum().real
+                variance = ((Eloc - energy) * (Eloc - energy).conj() * sample_weight).sum().real
+                n_sites = int(hamiltonian.system_dim.prod().item())
+                diagnostics: dict = {
+                    "energy": energy.item(),
+                    "energy_per_site": energy.item() / n_sites,
+                    "energy_loss": energy_loss.detach().item(),
+                    "loss": loss.detach().item(),
+                    "variance": variance.item(),
+                    "n_unique": samples.shape[1],
+                    "iter_time": tf - t0,
+                    "system_dim": hamiltonian.system_dim.tolist(),
+                    "phys_params": hamiltonian.phys_params.tolist(),
+                }
+                if sym_loss_val is not None:
+                    diagnostics["sym_loss"] = sym_loss_val.detach().item()
+                    diagnostics["beta"] = beta
+                on_step(step, diagnostics)
+    except KeyboardInterrupt:
+        # Avoid aborting any post-run cleanup.
+        print(f"\nTraining interrupted at step {step}.")

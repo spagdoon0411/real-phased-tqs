@@ -62,7 +62,7 @@ def _build_model(config: dict, device: torch.device) -> TransformerQuantumState:
     L_min, L_max = config["L_range"]
     h_min, h_max = config["h_range"]
     hamiltonian = ham_cls(
-        system_dim_range=np.array([L_min, L_max]),
+        system_dim_range=np.array([[L_min, L_max]]),
         static_params=np.array([config["J"]]),
         ranged_params=np.array([[h_min, h_max]]),
         periodic=config["periodic"],
