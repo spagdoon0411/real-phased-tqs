@@ -42,6 +42,7 @@ dim_feedforward = 4 * d_model
 # Logging / checkpointing
 wandb_project = "real-phased-tqs"
 checkpoint_every = 10
+cuda_memory_snapshotting = True
 
 
 def _select_device() -> torch.device:
@@ -138,6 +139,9 @@ def _run_training(hamiltonian: Hamiltonian, device: torch.device, ckpt_dir: Path
         device=device,
     )
 
+    if cuda_memory_snapshotting and device.type == "cuda":
+        torch.cuda.memory._record_memory_history(max_entries=100_000)
+
     optimizer = torch.optim.Adam(model.parameters(), lr=1.0, betas=(0.9, 0.98), eps=1e-9)
 
     def noam_lambda(step: int) -> float:
@@ -206,6 +210,8 @@ def _run_training(hamiltonian: Hamiltonian, device: torch.device, ckpt_dir: Path
                 },
                 ckpt_dir / f"{step:06d}.pt",
             )
+            if cuda_memory_snapshotting and device.type == "cuda":
+                torch.cuda.memory._dump_snapshot(str(ckpt_dir / f"{step:06d}_cuda_mem.pickle"))
 
     match sampler_id:
         case "iid":
@@ -237,6 +243,9 @@ def _run_training(hamiltonian: Hamiltonian, device: torch.device, ckpt_dir: Path
         sym_batch_size=sym_batch_size,
         sym_phase_weight=sym_phase_weight,
     )
+
+    if cuda_memory_snapshotting and device.type == "cuda":
+        torch.cuda.memory._record_memory_history(enabled=None)
 
     wandb.finish()
 
